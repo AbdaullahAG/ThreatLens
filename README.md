@@ -108,6 +108,14 @@ pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
 ---
+## 🏗️ Architecture Notes
+
+- **Enrichers** are fully independent — adding a new API requires only a new file in `src/enrichers/` that inherits from `BaseEnricher`.
+- **IOC types** are typed enums, not strings — prevents bugs.
+- **Config** reads from `config/keys.env` with system environment variable fallback — CI/CD friendly.
+- **Rate limiting** is handled per-enricher with configurable delay (`--delay`).
+- **All errors** are caught, logged, and stored in `result.errors` — one failing API never stops the others.
+---
 
 ## 🔑 API Keys — Where to Get Them
 
@@ -148,16 +156,6 @@ pytest tests/ -v --cov=src --cov-report=term-missing
 ```
 
 **Excel report:** Multi-sheet workbook with color-coded verdicts (red = malicious, yellow = suspicious, green = clean), saved to `output/ThreatLens_Report_<timestamp>.xlsx`
-
----
-
-## 🏗️ Architecture Notes
-
-- **Enrichers** are fully independent — adding a new API requires only a new file in `src/enrichers/` that inherits from `BaseEnricher`.
-- **IOC types** are typed enums, not strings — prevents bugs.
-- **Config** reads from `config/keys.env` with system environment variable fallback — CI/CD friendly.
-- **Rate limiting** is handled per-enricher with configurable delay (`--delay`).
-- **All errors** are caught, logged, and stored in `result.errors` — one failing API never stops the others.
 
 ---
 
