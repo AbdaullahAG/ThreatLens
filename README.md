@@ -154,6 +154,16 @@ pytest tests/ -v --cov=src --cov-report=term-missing
 │ CVE-2021-44228   │ Critical │ 10.0 │ 2021-12-10   │
 └──────────────────┴──────────┴──────┴──────────────┘
 ```
+## Screenshots
+
+<p align="center">
+  <img src="./screenshots/Screenshot 2026-04-26 223347.png" width="45%" alt="IP Usage">
+  <img src="./screenshots/Screenshot 2026-04-26 223543.png" width="45%" alt="COMBO2">
+  <img src="./screenshots/Screenshot 2026-04-26 223602.png" width="45%" alt="COMBO1">
+  <img src="./screenshots/Screenshot 2026-04-26 223650.png" width="45%" alt="SAFE IP">
+  <img src="./screenshots/Screenshot 2026-04-26 223744.png" width="45%" alt="malicious + safe ip ">
+  <img src="./screenshots/Screenshot 2026-04-26 224246.png" width="45%" alt="hash">
+</p>
 
 **Excel report:** Multi-sheet workbook with color-coded verdicts (red = malicious, yellow = suspicious, green = clean), saved to `output/ThreatLens_Report_<timestamp>.xlsx`
 
