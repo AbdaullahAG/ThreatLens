@@ -171,4 +171,13 @@ pytest tests/ -v --cov=src --cov-report=term-missing
 
 ## 📄 License
 
-MIT License — free for personal, academic, and commercial use.
+This project is licensed under the **Apache License 2.0**. 
+
+See the [LICENSE](LICENSE) file for more details.
+
+---
+## ⚠️ Legal Disclaimer
+This tool is for **educational and authorized security testing purposes only**. 
+The user is solely responsible for complying with the terms of service of the 
+integrated APIs and all applicable laws. The author assumes no liability and 
+is not responsible for any misuse, illegal activity, or damage caused by this program.
