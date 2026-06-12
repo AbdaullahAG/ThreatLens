@@ -171,9 +171,9 @@ pytest tests/ -v --cov=src --cov-report=term-missing
 
 ## 📄 License
 
-This project is licensed under the **Apache License 2.0**. 
+This project is licensed under the [PolyForm Noncommercial License 1.0.0](LICENSE).
 
-See the [LICENSE](LICENSE) file for more details.
+You're free to use, study, modify, and share this code for personal, educational, or research purposes. **Commercial use is not permitted without prior written permission** from the author (Abd.moh9999@yahoo.com).
 
 ---
 ## ⚠️ Legal Disclaimer
