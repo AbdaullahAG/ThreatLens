@@ -143,7 +143,7 @@ Examples:
         version="ThreatLens v2.0.0",
     )
 
-    return parser
+    return parser 
 
 
 def validate_args(args: argparse.Namespace) -> bool:
