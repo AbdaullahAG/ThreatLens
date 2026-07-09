@@ -4,7 +4,7 @@
 >Investigate IPs, domains, hashes, and CVEs across 6 free threat intel APIs — without switching between browser tabs.
 ---
 
-## ✨ Features
+## ✨ Features 
 
 | Feature | Details |
 |---|---|
