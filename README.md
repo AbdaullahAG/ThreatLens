@@ -1,4 +1,8 @@
 # 🔍 ThreatLens v2.0
+## Featured In
+[![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
+
+> Proudly featured in the official **[Awesome OSINT](https://github.com/jivoi/awesome-osint)** repository! 🚀
 
 > **Professional Multi-Source Threat Intelligence CLI Tool**  
 >Investigate IPs, domains, hashes, and CVEs across 6 free threat intel APIs — without switching between browser tabs.
