@@ -1,6 +1,6 @@
 <div align="center">
 
-# 🔍 ThreatLens
+# 🔍 ThreatLens 
 
 ### Professional Multi-Source Threat Intelligence CLI
 
