@@ -1,30 +1,35 @@
 <div align="center">
+  <img src="./screenshots/banner.svg" alt="ThreatLens — Multi-Source Threat Intelligence CLI" width="100%">
 
-# 🔍 ThreatLens 
+  <br>
 
-### Professional Multi-Source Threat Intelligence CLI 
+  [![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
+  [![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+  [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey.svg)](LICENSE)
+  [![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)](tests/)
+  <br>
+  [![Stars](https://img.shields.io/github/stars/<your-username>/threatlens?style=flat&color=22D3EE&label=stars)](../../stargazers)
+  [![Forks](https://img.shields.io/github/forks/<your-username>/threatlens?style=flat&color=22D3EE&label=forks)](../../network/members)
+  [![Last Commit](https://img.shields.io/github/last-commit/<your-username>/threatlens?style=flat&color=22D3EE&label=updated)](../../commits)
+  [![Issues](https://img.shields.io/github/issues/<your-username>/threatlens?style=flat&color=22D3EE&label=issues)](../../issues)
 
-**Investigate IPs, domains, hashes, and CVEs across 6 free threat intel APIs — without switching between browser tabs.**
+  <br>
 
-[![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
-[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC.svg)](tests/)
-[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
-[![Maintained](https://img.shields.io/badge/maintained-yes-success.svg)](#)
+  <p><b>Investigate IPs, domains, hashes, and CVEs across 6 free threat intel APIs — without switching between browser tabs.</b></p>
 
-> 🚀 Proudly featured in the official **[Awesome OSINT](https://github.com/jivoi/awesome-osint)** repository!
-
-[Features](#-features) •
-[Quick Start](#-quick-start) •
-[Usage](#-usage) •
-[Architecture](#️-architecture) •
-[API Keys](#-api-keys) •
-[Screenshots](#-screenshots) •
-[Contributing](#-contributing) •
-[License](#-license)
-
+  <p>
+    <a href="#-quick-start"><b>Quick Start</b></a> ·
+    <a href="#-usage"><b>Usage</b></a> ·
+    <a href="#️-architecture"><b>Architecture</b></a> ·
+    <a href="#-api-keys"><b>API Keys</b></a> ·
+    <a href="#-screenshots"><b>Screenshots</b></a> ·
+    <a href="#-contributing"><b>Contributing</b></a>
+  </p>
 </div>
+
+<br>
+
+> 🚀 Proudly featured in the official **[Awesome OSINT](https://github.com/jivoi/awesome-osint)** repository.
 
 ---
 
@@ -33,6 +38,28 @@
 **ThreatLens** is a single command-line tool that unifies threat intelligence lookups across the most trusted free OSINT sources. Instead of pasting an IP into five different websites, ThreatLens queries them all in parallel, normalizes the results, and gives you a clear verdict — in the terminal, or in a polished, color-coded Excel/JSON/CSV report.
 
 Built for SOC analysts, incident responders, threat hunters, and anyone who wants fast, reliable IOC enrichment without leaving the shell.
+
+<table>
+<tr>
+<td width="50%" valign="top">
+
+**Why ThreatLens**
+- One command instead of five browser tabs
+- Auto-extracts IOCs straight out of raw logs
+- A single failing/rate-limited API never blocks the rest
+- Works entirely on free API tiers
+
+</td>
+<td width="50%" valign="top">
+
+**Not for**
+- Real-time/streaming detection pipelines
+- Paid/enterprise-only intel feeds
+- Replacing a full SIEM or SOAR platform
+
+</td>
+</tr>
+</table>
 
 ---
 
@@ -53,31 +80,21 @@ Built for SOC analysts, incident responders, threat hunters, and anyone who want
 
 ## 🚀 Quick Start
 
-### 1. Clone & install
-
 ```bash
-git clone https://github.com/<your-username>/threatlens.git
+# 1. Clone & install
+git clone https://github.com/AbdaullahAG/threatlens.git
 cd threatlens
 pip install -r requirements.txt
-```
 
-### 2. Configure your API keys
+# 2. Configure your API keys
+cp config/keys.env.example config/keys.env
+# → edit config/keys.env and fill in your keys
 
-```bash
-cp config/keys.env.example config/keys.env   # if not already present
-```
-
-Open `config/keys.env` and fill in your keys.
-
-> 💡 **NVD (CVE lookups) works out of the box with no API key.** Every other API offers a free tier that takes under 2 minutes to sign up for — see the [API Keys](#-api-keys) table below.
-
-### 3. Run your first scan
-
-```bash
+# 3. Run your first scan
 python main.py -i 45.33.32.156
 ```
 
-That's it — ThreatLens queries all configured sources and prints a verdict table.
+> 💡 **NVD (CVE lookups) works out of the box with no API key.** Every other API offers a free tier that takes under 2 minutes to sign up for — see [API Keys](#-api-keys) below.
 
 ---
 
@@ -144,7 +161,8 @@ python main.py -i 8.8.8.8 -v
 </table>
 
 <details>
-<summary><strong>See all CLI flags</strong></summary>
+<summary><b>See all CLI flags</b></summary>
+<br>
 
 | Flag | Description |
 |---|---|
@@ -197,7 +215,7 @@ threat_intel_tool/
     └── test_core.py             # Unit tests
 ```
 
-### Design principles
+**Design principles**
 
 - **Pluggable enrichers** — adding a new intel source only requires a new file in `src/enrichers/` that subclasses `BaseEnricher`. No changes needed elsewhere.
 - **Typed IOCs** — IOC types are enums, not raw strings, catching mistakes at development time instead of runtime.
