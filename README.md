@@ -3,15 +3,12 @@
 
   <br>
 
-  [![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
-  [![Python](https://img.shields.io/badge/python-3.9%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
-  [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey.svg)](LICENSE)
-  [![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)](tests/)
-  <br>
-  [![Stars](https://img.shields.io/github/stars/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=stars)](../../stargazers)
-  [![Forks](https://img.shields.io/github/forks/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=forks)](../../network/members)
-  [![Last Commit](https://img.shields.io/github/last-commit/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=updated)](../../commits)
-  [![Issues](https://img.shields.io/github/issues/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=issues)](../../issues)
+[![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
+[![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
+[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC.svg)](tests/)
+[![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
+[![Maintained](https://img.shields.io/badge/maintained-yes-success.svg)](#)
 
   <br>
 
