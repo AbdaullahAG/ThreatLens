@@ -8,10 +8,10 @@
   [![License](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey.svg)](LICENSE)
   [![Tests](https://img.shields.io/badge/tests-pytest-0A9EDC?logo=pytest&logoColor=white)](tests/)
   <br>
-  [![Stars](https://img.shields.io/github/stars/<your-username>/threatlens?style=flat&color=22D3EE&label=stars)](../../stargazers)
-  [![Forks](https://img.shields.io/github/forks/<your-username>/threatlens?style=flat&color=22D3EE&label=forks)](../../network/members)
-  [![Last Commit](https://img.shields.io/github/last-commit/<your-username>/threatlens?style=flat&color=22D3EE&label=updated)](../../commits)
-  [![Issues](https://img.shields.io/github/issues/<your-username>/threatlens?style=flat&color=22D3EE&label=issues)](../../issues)
+  [![Stars](https://img.shields.io/github/stars/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=stars)](../../stargazers)
+  [![Forks](https://img.shields.io/github/forks/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=forks)](../../network/members)
+  [![Last Commit](https://img.shields.io/github/last-commit/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=updated)](../../commits)
+  [![Issues](https://img.shields.io/github/issues/<AbdaullahAG>/threatlens?style=flat&color=22D3EE&label=issues)](../../issues)
 
   <br>
 
