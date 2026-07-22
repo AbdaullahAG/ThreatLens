@@ -2,7 +2,7 @@
 
 # 🔍 ThreatLens 
 
-### Professional Multi-Source Threat Intelligence CLI
+### Professional Multi-Source Threat Intelligence CLI 
 
 **Investigate IPs, domains, hashes, and CVEs across 6 free threat intel APIs — without switching between browser tabs.**
 
