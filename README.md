@@ -1,7 +1,7 @@
 <div align="center">
   <img src="./screenshots/banner.svg" alt="ThreatLens — Multi-Source Threat Intelligence CLI" width="100%">
 
-  <br>
+  <br> 
 
 [![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
