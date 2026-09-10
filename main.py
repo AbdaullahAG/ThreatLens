@@ -2,7 +2,7 @@
 """
 ThreatLens - Professional Threat Intelligence CLI Tool
 Author: Threat Intel Project
-Version: 2.0.0
+Version: 2.1.0
 """
 
 import sys
@@ -10,7 +10,6 @@ import argparse
 from pathlib import Path
 from rich.console import Console
 from rich.panel import Panel
-from rich.text import Text
 
 # Add src to path
 sys.path.insert(0, str(Path(__file__).parent))
@@ -57,6 +56,11 @@ Examples:
         nargs="+",
         metavar="IP",
         help="One or more IP addresses to investigate",
+    )
+    ioc_group.add_argument(
+        "--allow-private-iocs",
+        action="store_true",
+        help="Allow private, loopback, and reserved IP observables (they may be sent to external providers)",
     )
     ioc_group.add_argument(
         "-d", "--domain",
@@ -121,6 +125,40 @@ Examples:
         help="Path to API keys config file (default: config/keys.env)",
     )
     misc_group.add_argument(
+        "--max-file-size-mb",
+        type=int,
+        default=10,
+        help="Maximum log file size to parse in MiB (default: 10; maximum: 100)",
+    )
+    misc_group.add_argument(
+        "--max-iocs",
+        type=int,
+        default=1000,
+        help="Maximum unique IOCs accepted per run (default: 1000)",
+    )
+    misc_group.add_argument(
+        "--max-requests",
+        type=int,
+        default=250,
+        help="Maximum external API requests per run (default: 250)",
+    )
+    misc_group.add_argument(
+        "--cache-path",
+        default=".threatlens/investigations.db",
+        help="SQLite path for local cache and investigation history",
+    )
+    misc_group.add_argument(
+        "--cache-ttl",
+        type=int,
+        default=3600,
+        help="Cache lifetime in seconds (default: 3600)",
+    )
+    misc_group.add_argument(
+        "--no-cache",
+        action="store_true",
+        help="Do not read or write the local enrichment cache",
+    )
+    misc_group.add_argument(
         "--timeout",
         type=int,
         default=10,
@@ -140,7 +178,7 @@ Examples:
     misc_group.add_argument(
         "--version",
         action="version",
-        version="ThreatLens v2.0.0",
+        version="ThreatLens v2.1.0",
     )
 
     return parser 
@@ -180,7 +218,19 @@ def main():
     logger = setup_logger(verbose=args.verbose)
 
     # Load config
-    config = Config(config_path=args.config, timeout=args.timeout, delay=args.delay)
+    try:
+        config = Config(
+            config_path=args.config,
+            timeout=args.timeout,
+            delay=args.delay,
+            max_file_bytes=args.max_file_size_mb * 1024 * 1024,
+            max_iocs=args.max_iocs,
+            max_requests=args.max_requests,
+        )
+        if args.cache_ttl < 0:
+            raise ValueError("cache_ttl must be zero or greater")
+    except ValueError as exc:
+        parser.error(str(exc))
 
     # Run engine
     engine = ThreatLensEngine(config=config, logger=logger, args=args)

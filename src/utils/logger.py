@@ -17,7 +17,7 @@ def setup_logger(verbose: bool = False) -> logging.Logger:
             RichHandler(
                 rich_tracebacks=True,
                 show_path=verbose,
-                markup=True,
+                markup=False,
             )
         ],
     )

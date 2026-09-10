@@ -14,6 +14,9 @@ class Config:
     config_path: str = "config/keys.env"
     timeout: int = 10
     delay: float = 0.5
+    max_file_bytes: int = 10 * 1024 * 1024
+    max_iocs: int = 1_000
+    max_requests: int = 250
 
     # API Keys (populated after __post_init__)
     abuseipdb_key: Optional[str] = field(default=None, init=False)
@@ -26,6 +29,16 @@ class Config:
     nvd_key: Optional[str] = field(default=None, init=False)
 
     def __post_init__(self):
+        if not 1 <= self.timeout <= 60:
+            raise ValueError("timeout must be between 1 and 60 seconds")
+        if not 0 <= self.delay <= 5:
+            raise ValueError("delay must be between 0 and 5 seconds")
+        if not 1 <= self.max_iocs <= 10_000:
+            raise ValueError("max_iocs must be between 1 and 10000")
+        if not 1 <= self.max_file_bytes <= 100 * 1024 * 1024:
+            raise ValueError("max_file_bytes must be between 1 byte and 100 MiB")
+        if not 1 <= self.max_requests <= 10_000:
+            raise ValueError("max_requests must be between 1 and 10000")
         self._load_keys()
 
     def _load_keys(self):

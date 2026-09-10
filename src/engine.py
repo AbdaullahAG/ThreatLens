@@ -7,6 +7,7 @@ from __future__ import annotations
  
 import argparse
 import logging
+import time
 from typing import List
 
 from rich.console import Console
@@ -20,6 +21,8 @@ from src.reporters.terminal_display import display_results
 from src.reporters.excel_reporter import ExcelReporter
 from src.reporters.other_reporters import JSONReporter, CSVReporter
 from src.utils.config import Config
+from src.storage import InvestigationStore
+from src.utils.quota import RequestBudget
 
 console = Console()
 
@@ -30,6 +33,8 @@ class ThreatLensEngine:
         self.config = config
         self.logger = logger
         self.args = args
+        self.store = InvestigationStore(args.cache_path)
+        self.request_budget = RequestBudget(config.max_requests)
 
     def run(self) -> bool:
         try:
@@ -49,7 +54,9 @@ class ThreatLensEngine:
             )
 
             # 2. Build enrichers
-            enrichers = build_enrichers(self.config, selected_apis=self.args.apis)
+            enrichers = build_enrichers(
+                self.config, selected_apis=self.args.apis, request_budget=self.request_budget
+            )
             if not enrichers:
                 console.print(
                     "[red]✗ No enrichers available.[/] "
@@ -67,6 +74,9 @@ class ThreatLensEngine:
             if results:
                 display_results(results)
 
+            investigation_id = self.store.record_investigation(results)
+            console.print(f"[dim]Investigation recorded locally: {investigation_id}[/]")
+
             # 5. Save reports
             if not self.args.no_report:
                 self._save_reports(results)
@@ -83,7 +93,7 @@ class ThreatLensEngine:
     def _collect_iocs(self) -> List[IOC]:
         """Gather IOCs from CLI arguments and/or log file."""
         iocs: List[IOC] = []
-        parser = IOCParser()
+        parser = IOCParser(self.config.max_file_bytes, self.config.max_iocs)
 
         # Explicit CLI inputs
         explicit = IOCParser.from_args(
@@ -91,6 +101,7 @@ class ThreatLensEngine:
             domains=self.args.domain,
             hashes=self.args.hash,
             cves=self.args.cve,
+            allow_private=self.args.allow_private_iocs,
         )
         iocs.extend(explicit)
 
@@ -111,6 +122,8 @@ class ThreatLensEngine:
                 f"[dim](skipped {s['ignored_private_ips']} private IPs)[/]"
             )
             iocs.extend(parse_result.iocs)
+            if parse_result.truncated:
+                console.print(f"[yellow]⚠ IOC limit ({self.config.max_iocs}) reached; remaining entries were skipped.[/]")
 
         # Deduplicate by value+type
         seen: set[str] = set()
@@ -121,7 +134,9 @@ class ThreatLensEngine:
                 seen.add(key)
                 unique.append(ioc)
 
-        return unique
+        if len(unique) > self.config.max_iocs:
+            console.print(f"[yellow]⚠ IOC limit ({self.config.max_iocs}) reached; remaining entries were skipped.[/]")
+        return unique[:self.config.max_iocs]
 
     def _run_enrichment(
         self, iocs: List[IOC], enrichers: list
@@ -145,7 +160,14 @@ class ThreatLensEngine:
                     task,
                     description=f"[cyan]Enriching [bold]{ioc.ioc_type.value}[/]: {ioc.value[:40]}",
                 )
-                result = enrich_ioc(ioc, enrichers)
+                result = None if self.args.no_cache else self.store.get_cached(ioc, int(time.time()))
+                if result:
+                    result.cached = True
+                    result.explanation.append("Returned from the local cache.")
+                else:
+                    result = enrich_ioc(ioc, enrichers)
+                    if not self.args.no_cache and self.args.cache_ttl:
+                        self.store.cache_result(result, int(time.time()) + self.args.cache_ttl)
                 results.append(result)
                 progress.advance(task)
 
@@ -178,7 +200,6 @@ class ThreatLensEngine:
 
     @staticmethod
     def _ioc_type_summary(iocs: List[IOC]) -> str:
-        from src.models import IOCType
         from collections import Counter
         counts = Counter(i.ioc_type.value for i in iocs)
         return "  " + "  ".join(f"[cyan]{t}[/]: {c}" for t, c in sorted(counts.items()))

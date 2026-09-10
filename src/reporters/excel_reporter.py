@@ -10,11 +10,12 @@ from typing import List
 
 from openpyxl import Workbook
 from openpyxl.styles import (
-    PatternFill, Font, Alignment, Border, Side, GradientFill
+    PatternFill, Font, Alignment, Border, Side
 )
 from openpyxl.utils import get_column_letter
 
 from src.models import EnrichmentResult, IOCType
+from src.utils.security import spreadsheet_value
 
 
 # ── Color palette ───────────────────────────────────────────────────────────
@@ -168,7 +169,7 @@ class ExcelReporter:
             fills = [None, None, C_RED if malicious else None, C_ORANGE if suspicious else None, C_GREEN if clean else None]
 
             for col, (val, fill) in enumerate(zip(row_data, fills), 1):
-                cell = ws.cell(row=row, column=col, value=val)
+                cell = ws.cell(row=row, column=col, value=spreadsheet_value(val))
                 cell.alignment = _center()
                 cell.border = THIN_BORDER
                 if fill:
@@ -197,7 +198,7 @@ class ExcelReporter:
             key_finding = _key_finding(r)
             row_vals = [r.ioc.value, r.ioc.ioc_type.value, r.verdict, r.country or "—", key_finding]
             for col, val in enumerate(row_vals, 1):
-                cell = ws.cell(row=row, column=col, value=val)
+                cell = ws.cell(row=row, column=col, value=spreadsheet_value(val))
                 cell.alignment = _left()
                 cell.border = THIN_BORDER
                 if col == 3:
@@ -351,7 +352,7 @@ class ExcelReporter:
     def _write_data_row(self, ws, row_idx: int, values: list, verdict: str, verdict_col: int):
         alt = row_idx % 2 == 0
         for col, val in enumerate(values, 1):
-            cell = ws.cell(row=row_idx, column=col, value=val)
+            cell = ws.cell(row=row_idx, column=col, value=spreadsheet_value(val))
             cell.border = THIN_BORDER
             cell.alignment = _left()
             if col == verdict_col:

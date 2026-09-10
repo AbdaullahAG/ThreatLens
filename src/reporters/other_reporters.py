@@ -9,9 +9,9 @@ import csv
 import datetime
 from pathlib import Path
 from typing import List
-from dataclasses import asdict
 
 from src.models import EnrichmentResult
+from src.utils.security import spreadsheet_value
 
 
 class JSONReporter:
@@ -28,7 +28,7 @@ class JSONReporter:
         data = {
             "meta": {
                 "tool": "ThreatLens",
-                "version": "2.0.0",
+                "version": "2.1.0",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
                 "total_iocs": len(results),
             },
@@ -45,6 +45,9 @@ class JSONReporter:
         return {
             "ioc": {"value": r.ioc.value, "type": r.ioc.ioc_type.value},
             "verdict": r.verdict,
+            "confidence_score": r.confidence_score,
+            "explanation": r.explanation,
+            "cached": r.cached,
             "country": r.country,
             "isp": r.isp,
             "organization": r.organization,
@@ -104,7 +107,7 @@ class CSVReporter:
             writer = csv.DictWriter(f, fieldnames=self.FIELDS)
             writer.writeheader()
             for r in results:
-                writer.writerow({
+                row = {
                     "ioc_value": r.ioc.value,
                     "ioc_type": r.ioc.ioc_type.value,
                     "verdict": r.verdict,
@@ -132,6 +135,7 @@ class CSVReporter:
                     "cve_description": (r.cve_description or "")[:200],
                     "published_date": r.published_date or "",
                     "errors": "; ".join(f"{k}:{v}" for k, v in r.errors.items()),
-                })
+                }
+                writer.writerow({key: spreadsheet_value(value) for key, value in row.items()})
 
         return filepath
