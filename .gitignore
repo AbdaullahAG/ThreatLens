@@ -16,6 +16,7 @@ build/
 
 # Output reports
 output/
+.threatlens/
 *.xlsx
 *.json
 *.csv
@@ -28,3 +29,8 @@ output/
 # OS
 .DS_Store
 Thumbs.db
+# Virtual Environments
+venv/
+.venv/
+env/
+ENV/

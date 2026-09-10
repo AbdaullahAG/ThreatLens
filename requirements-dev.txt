@@ -1,0 +1,5 @@
+# Development and CI-only tooling. Runtime dependencies remain in requirements.txt.
+bandit==1.8.6
+pip-audit==2.9.0
+pip-tools>=7.4.1
+ruff==0.12.10
