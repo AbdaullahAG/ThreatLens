@@ -14,6 +14,7 @@ class URLScanEnricher(BaseEnricher):
     supports = [IOCType.URL, IOCType.DOMAIN]
 
     SEARCH_URL = "https://urlscan.io/api/v1/search/"
+    allowed_hosts = {"urlscan.io"}
 
     def is_available(self) -> bool:
         # URLScan search is free without a key; key only needed for submissions

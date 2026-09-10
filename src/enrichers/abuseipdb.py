@@ -14,6 +14,7 @@ class AbuseIPDBEnricher(BaseEnricher):
     supports = [IOCType.IP]
 
     BASE_URL = "https://api.abuseipdb.com/api/v2/check"
+    allowed_hosts = {"api.abuseipdb.com"}
 
     def is_available(self) -> bool:
         return bool(self.api_key)

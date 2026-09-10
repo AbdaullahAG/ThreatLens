@@ -9,6 +9,7 @@ from pathlib import Path
 from typing import NamedTuple
 
 from src.models import IOC, IOCType
+from src.utils.security import IOCValidationError, validate_ioc
 
 
 # ---------------------------------------------------------------------------
@@ -61,6 +62,7 @@ class ParseResult(NamedTuple):
     iocs: list[IOC]
     ignored_ips: list[str]
     stats: dict[str, int]
+    truncated: bool = False
 
 
 class IOCParser:
@@ -69,11 +71,19 @@ class IOCParser:
     Can also read directly from a file path.
     """
 
+    def __init__(self, max_file_bytes: int = 10 * 1024 * 1024, max_iocs: int = 1_000):
+        self.max_file_bytes = max_file_bytes
+        self.max_iocs = max_iocs
+
     def parse_file(self, path: str) -> ParseResult:
         """Read a file and parse its contents."""
         file_path = Path(path)
-        if not file_path.exists():
+        if not file_path.is_file():
             raise FileNotFoundError(f"Log file not found: {path}")
+        if file_path.stat().st_size > self.max_file_bytes:
+            raise ValueError(
+                f"Log file exceeds the configured {self.max_file_bytes // (1024 * 1024)} MiB limit"
+            )
         text = file_path.read_text(encoding="utf-8", errors="replace")
         return self.parse_text(text)
 
@@ -82,10 +92,19 @@ class IOCParser:
         iocs: list[IOC] = []
         ignored_ips: list[str] = []
         seen: set[str] = set()
+        truncated = False
 
         def add(value: str, ioc_type: IOCType):
+            nonlocal truncated
+            if len(iocs) >= self.max_iocs:
+                truncated = True
+                return
             key = f"{ioc_type}:{value.lower()}"
             if key not in seen:
+                try:
+                    value = validate_ioc(value, ioc_type)
+                except IOCValidationError:
+                    return
                 seen.add(key)
                 iocs.append(IOC(value=value, ioc_type=ioc_type))
 
@@ -128,21 +147,21 @@ class IOCParser:
             "ignored_private_ips": len(ignored_ips),
         }
 
-        return ParseResult(iocs=iocs, ignored_ips=ignored_ips, stats=stats)
+        return ParseResult(iocs=iocs, ignored_ips=ignored_ips, stats=stats, truncated=truncated)
 
     @staticmethod
     def from_args(
-        ips=None, domains=None, hashes=None, cves=None
+        ips=None, domains=None, hashes=None, cves=None, allow_private: bool = False
     ) -> list[IOC]:
         """Build IOC list from explicit CLI arguments."""
         result: list[IOC] = []
         for ip in (ips or []):
-            result.append(IOC(value=ip.strip(), ioc_type=IOCType.IP))
+            result.append(IOC(value=validate_ioc(ip, IOCType.IP, allow_private=allow_private), ioc_type=IOCType.IP))
         for d in (domains or []):
-            t = IOCType.URL if d.startswith("http") else IOCType.DOMAIN
-            result.append(IOC(value=d.strip(), ioc_type=t))
+            t = IOCType.URL if d.strip().lower().startswith(("http://", "https://")) else IOCType.DOMAIN
+            result.append(IOC(value=validate_ioc(d, t, allow_private=allow_private), ioc_type=t))
         for h in (hashes or []):
-            result.append(IOC(value=h.strip().lower(), ioc_type=IOCType.HASH))
+            result.append(IOC(value=validate_ioc(h, IOCType.HASH), ioc_type=IOCType.HASH))
         for cve in (cves or []):
-            result.append(IOC(value=cve.strip().upper(), ioc_type=IOCType.CVE))
+            result.append(IOC(value=validate_ioc(cve, IOCType.CVE), ioc_type=IOCType.CVE))
         return result

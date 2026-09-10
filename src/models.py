@@ -80,34 +80,50 @@ class EnrichmentResult:
     # Per-source raw results (for verbose/JSON output)
     sources: dict[str, Any] = field(default_factory=dict)
     errors: dict[str, str] = field(default_factory=dict)
+    explanation: list[str] = field(default_factory=list)
+    cached: bool = False
 
     def set_verdict(self):
-        """Derive overall verdict from available scores."""
+        """Derive a verdict only when at least one compatible provider succeeded."""
+        self.explanation = []
+        if not self.sources:
+            self.verdict = "Unknown"
+            self.confidence_score = 0
+            self.explanation.append("No enrichment source returned usable evidence.")
+            return
+
         if self.ioc.ioc_type == IOCType.IP:
             score = self.abuse_score
             if score >= 75:
                 self.verdict = "Malicious"
+                self.explanation.append(f"AbuseIPDB confidence score is {score}%.")
             elif score >= 25:
                 self.verdict = "Suspicious"
-            elif score == 0 and self.confidence_score == 0:
-                self.verdict = "Clean"
+                self.explanation.append(f"AbuseIPDB confidence score is {score}%.")
             else:
                 self.verdict = "Clean"
+                self.explanation.append("Successful sources returned no elevated IP reputation signal.")
         elif self.ioc.ioc_type in (IOCType.DOMAIN, IOCType.URL):
             if self.malicious_votes > 0:
                 self.verdict = "Malicious"
+                self.explanation.append(f"{self.malicious_votes} malicious source signal(s) were returned.")
             elif self.suspicious_votes > 0:
                 self.verdict = "Suspicious"
+                self.explanation.append(f"{self.suspicious_votes} suspicious source signal(s) were returned.")
             else:
                 self.verdict = "Clean"
+                self.explanation.append("Successful sources returned no malicious or suspicious signal.")
         elif self.ioc.ioc_type == IOCType.HASH:
             ratio = self.positives / self.total_scanners if self.total_scanners else 0
             if ratio >= 0.5:
                 self.verdict = "Malicious"
+                self.explanation.append(f"{self.positives}/{self.total_scanners} scanners detected the file.")
             elif ratio > 0:
                 self.verdict = "Suspicious"
+                self.explanation.append(f"{self.positives}/{self.total_scanners} scanners detected the file.")
             else:
                 self.verdict = "Clean"
+                self.explanation.append("Successful sources returned no file detections.")
         elif self.ioc.ioc_type == IOCType.CVE:
             if self.cvss_score is not None:
                 if self.cvss_score >= 9.0:
@@ -120,3 +136,39 @@ class EnrichmentResult:
                     self.verdict = "Low"
             else:
                 self.verdict = "Unknown"
+                self.explanation.append("The source returned no CVSS score.")
+
+        source_factor = min(45, len(self.sources) * 20)
+        signal_factor = 0
+        if self.verdict in {"Malicious", "Critical"}:
+            signal_factor = 45
+        elif self.verdict in {"Suspicious", "High"}:
+            signal_factor = 30
+        elif self.verdict in {"Clean", "Medium", "Low"}:
+            signal_factor = 20
+        self.confidence_score = min(100, source_factor + signal_factor)
+        self.explanation.append(
+            f"Confidence {self.confidence_score}/100 based on {len(self.sources)} successful source(s)."
+        )
+
+    def is_decisive(self) -> bool:
+        """Whether further paid/limited lookups add little value in normal mode."""
+        if self.ioc.ioc_type == IOCType.IP:
+            return self.abuse_score >= 90
+        if self.ioc.ioc_type in (IOCType.DOMAIN, IOCType.URL):
+            return self.malicious_votes >= 5
+        if self.ioc.ioc_type == IOCType.HASH:
+            return self.total_scanners >= 10 and self.positives / self.total_scanners >= 0.5
+        return False
+
+    def to_dict(self) -> dict[str, Any]:
+        data = dict(self.__dict__)
+        data["ioc"] = {"value": self.ioc.value, "type": self.ioc.ioc_type.value}
+        return data
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> "EnrichmentResult":
+        ioc_data = data["ioc"]
+        known = {field_name for field_name in cls.__dataclass_fields__ if field_name != "ioc"}
+        values = {key: value for key, value in data.items() if key in known}
+        return cls(ioc=IOC(ioc_data["value"], IOCType(ioc_data["type"])), **values)

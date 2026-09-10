@@ -6,7 +6,6 @@ https://developers.virustotal.com/reference
 """
 
 import base64
-import hashlib
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
 
@@ -16,6 +15,7 @@ class VirusTotalEnricher(BaseEnricher):
     supports = [IOCType.IP, IOCType.DOMAIN, IOCType.URL, IOCType.HASH]
 
     BASE_URL = "https://www.virustotal.com/api/v3"
+    allowed_hosts = {"www.virustotal.com"}
 
     def is_available(self) -> bool:
         return bool(self.api_key)

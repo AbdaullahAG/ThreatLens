@@ -14,6 +14,7 @@ class ShodanEnricher(BaseEnricher):
     supports = [IOCType.IP]
 
     BASE_URL = "https://api.shodan.io/shodan/host"
+    allowed_hosts = {"api.shodan.io"}
 
     def is_available(self) -> bool:
         return bool(self.api_key)

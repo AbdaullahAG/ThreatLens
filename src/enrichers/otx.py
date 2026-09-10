@@ -14,6 +14,7 @@ class OTXEnricher(BaseEnricher):
     supports = [IOCType.IP, IOCType.DOMAIN, IOCType.URL, IOCType.HASH]
 
     BASE_URL = "https://otx.alienvault.com/api/v1/indicators"
+    allowed_hosts = {"otx.alienvault.com"}
 
     def is_available(self) -> bool:
         return bool(self.api_key)
@@ -89,18 +90,9 @@ class OTXEnricher(BaseEnricher):
         )
 
     def _enrich_hash(self, ioc: IOC, result: EnrichmentResult) -> EnrichmentResult:
-        # Determine hash type by length
+        # Only supported hash lengths are accepted.
         length = len(ioc.value)
-        if length == 32:
-            hash_type = "file"
-            section_val = ioc.value
-        elif length == 40:
-            hash_type = "file"
-            section_val = ioc.value
-        elif length == 64:
-            hash_type = "file"
-            section_val = ioc.value
-        else:
+        if length not in (32, 40, 64):
             return result
 
         general = self._get_section("file", ioc.value, "general")

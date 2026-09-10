@@ -5,7 +5,7 @@ Enricher Registry — maps IOC types to their enrichers and dispatches calls.
 import logging
 from typing import Optional
 
-from src.models import IOC, IOCType, EnrichmentResult
+from src.models import IOC, EnrichmentResult
 from src.utils.config import Config
 from src.enrichers.abuseipdb import AbuseIPDBEnricher
 from src.enrichers.virustotal import VirusTotalEnricher
@@ -13,6 +13,7 @@ from src.enrichers.otx import OTXEnricher
 from src.enrichers.shodan import ShodanEnricher
 from src.enrichers.urlscan import URLScanEnricher
 from src.enrichers.nvd import NVDEnricher
+from src.utils.quota import RequestBudget
 
 logger = logging.getLogger("threatlens.registry")
 
@@ -30,6 +31,7 @@ ALL_ENRICHERS = [
 def build_enrichers(
     config: Config,
     selected_apis: Optional[list[str]] = None,
+    request_budget: Optional[RequestBudget] = None,
 ) -> list:
     """
     Instantiate all enrichers that have keys configured.
@@ -52,6 +54,7 @@ def build_enrichers(
             api_key=config.get_key(api_name),
             timeout=config.timeout,
             delay=config.delay,
+            request_budget=request_budget,
         )
         if instance.is_available():
             enrichers.append(instance)
@@ -73,10 +76,14 @@ def enrich_ioc(ioc: IOC, enrichers: list) -> EnrichmentResult:
         result.errors["registry"] = f"No enrichers support IOC type: {ioc.ioc_type}"
         return result
 
-    for enricher in compatible:
+    for enricher in sorted(compatible, key=lambda item: item.name):
         try:
             logger.debug(f"  → {enricher.name}")
             result = enricher.enrich(ioc, result)
+            result.set_verdict()
+            if result.is_decisive():
+                result.explanation.append("Further provider lookups were skipped after a decisive signal.")
+                break
         except Exception as e:
             logger.error(f"Enricher {enricher.name} crashed: {e}")
             result.errors[enricher.name] = str(e)
