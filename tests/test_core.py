@@ -6,6 +6,8 @@ Run with: pytest tests/ -v
 import pytest
 from src.parsers.ioc_parser import IOCParser
 from src.models import IOCType, IOC, EnrichmentResult
+from src.utils.security import IOCValidationError, spreadsheet_value, validate_ioc
+from src.storage import InvestigationStore
 
 
 # ── IOCParser Tests ──────────────────────────────────────────────────────────
@@ -93,13 +95,43 @@ class TestIOCParser:
         iocs = IOCParser.from_args(domains=["example.com"])
         assert iocs[0].ioc_type == IOCType.DOMAIN
 
+    def test_rejects_invalid_cli_ioc(self):
+        with pytest.raises(IOCValidationError):
+            IOCParser.from_args(ips=["not-an-ip"])
+
+    def test_rejects_private_cli_ip_by_default(self):
+        with pytest.raises(IOCValidationError):
+            IOCParser.from_args(ips=["192.168.1.1"])
+
+    def test_allows_private_cli_ip_only_when_explicit(self):
+        iocs = IOCParser.from_args(ips=["192.168.1.1"], allow_private=True)
+        assert iocs[0].value == "192.168.1.1"
+
+    def test_rejects_url_credentials(self):
+        with pytest.raises(IOCValidationError):
+            validate_ioc("https://user:password@example.com", IOCType.URL)
+
+    def test_file_limit(self, tmp_path):
+        path = tmp_path / "large.log"
+        path.write_text("8.8.8.8")
+        with pytest.raises(ValueError):
+            IOCParser(max_file_bytes=1).parse_file(str(path))
+
+    def test_spreadsheet_formula_is_neutralized(self):
+        assert spreadsheet_value("=HYPERLINK(\"https://evil.example\")").startswith("'")
+        assert spreadsheet_value(42) == 42
+
 
 # ── EnrichmentResult Tests ───────────────────────────────────────────────────
 
 class TestEnrichmentResult:
 
     def _make(self, ioc_type: IOCType, value: str = "test") -> EnrichmentResult:
-        return EnrichmentResult(ioc=IOC(value=value, ioc_type=ioc_type))
+        result = EnrichmentResult(ioc=IOC(value=value, ioc_type=ioc_type))
+        # Existing verdict tests model a successful provider response. A result
+        # with no source evidence is intentionally classified as Unknown.
+        result.sources["test_provider"] = {"status": "ok"}
+        return result
 
     def test_ip_malicious_verdict(self):
         r = self._make(IOCType.IP)
@@ -131,6 +163,24 @@ class TestEnrichmentResult:
         r.suspicious_votes = 0
         r.set_verdict()
         assert r.verdict == "Clean"
+
+    def test_no_successful_source_is_unknown(self):
+        r = self._make(IOCType.DOMAIN)
+        r.sources.clear()
+        r.errors["virustotal"] = "No data"
+        r.set_verdict()
+        assert r.verdict == "Unknown"
+        assert r.confidence_score == 0
+
+    def test_cache_round_trip(self, tmp_path):
+        store = InvestigationStore(str(tmp_path / "investigations.db"))
+        result = self._make(IOCType.IP, "8.8.8.8")
+        result.sources["test"] = {"status": "ok"}
+        result.set_verdict()
+        store.cache_result(result, expires_at=9_999_999_999)
+        cached = store.get_cached(result.ioc, now=1)
+        assert cached is not None
+        assert cached.ioc.value == "8.8.8.8"
 
     def test_hash_malicious(self):
         r = self._make(IOCType.HASH)
