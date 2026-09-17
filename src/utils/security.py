@@ -97,6 +97,11 @@ def validate_ioc(value: str, ioc_type: IOCType, *, allow_private: bool = False) 
     raise IOCValidationError("unsupported IOC type")
 
 
+def has_control_characters(value: str) -> bool:
+    """Public wrapper so other modules (CSV/log importers) can reuse this check."""
+    return _contains_controls(value)
+
+
 def spreadsheet_value(value: object) -> object:
     """Neutralise CSV/Excel formulas while retaining native numeric values."""
     if not isinstance(value, str):
