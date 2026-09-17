@@ -1,4 +1,4 @@
-# ThreatLens v2.1.0 — Python Requirements
+# ThreatLens v2.2.0 — Python Requirements
 # Install with: pip install -r requirements.txt
 
 # HTTP & networking

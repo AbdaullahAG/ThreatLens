@@ -28,7 +28,7 @@ class JSONReporter:
         data = {
             "meta": {
                 "tool": "ThreatLens",
-                "version": "2.1.0",
+                "version": "2.2.0",
                 "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
                 "total_iocs": len(results),
             },

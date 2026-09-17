@@ -19,8 +19,8 @@ BANNER = r"""
 def print_banner():
     text = Text(BANNER, style="bold cyan")
     subtitle = Text(
-        "  Professional Multi-Source Threat Intelligence Enricher  v2.0.0\n"
-        "  APIs: AbuseIPDB • VirusTotal • AlienVault OTX • Shodan • URLScan • NVD",
+        "  Professional Multi-Source Threat Intelligence Enricher  v2.2.0\n"
+        "  APIs: AbuseIPDB • VirusTotal • AlienVault OTX • Shodan • URLScan • NVD • CISA KEV • EPSS",
         style="dim white",
     )
     console.print(text)
