@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 import time
 from abc import ABC, abstractmethod
-from typing import Optional
+from typing import Optional, TYPE_CHECKING
 from urllib.parse import urlsplit
 
 import requests
@@ -13,6 +13,9 @@ import requests
 from src.models import EnrichmentResult, IOC
 from src.utils.quota import RequestBudget
 from src.utils.security import redact_secrets
+
+if TYPE_CHECKING:
+    from src.storage import InvestigationStore
 
 
 class BaseEnricher(ABC):
@@ -26,14 +29,18 @@ class BaseEnricher(ABC):
         timeout: int = 10,
         delay: float = 0.5,
         request_budget: Optional[RequestBudget] = None,
+        store: Optional["InvestigationStore"] = None,
     ):
         self.api_key = api_key
         self.timeout = timeout
         self.delay = delay
         self.request_budget = request_budget
+        # Optional handle to the local SQLite store, used by enrichers that
+        # cache bulk feeds (e.g. CISA KEV) rather than per-IOC lookups.
+        self.store = store
         self.logger = logging.getLogger(f"threatlens.{self.name}")
         self.session = requests.Session()
-        self.session.headers.update({"User-Agent": "ThreatLens/2.1"})
+        self.session.headers.update({"User-Agent": "ThreatLens/2.2"})
 
     def is_available(self) -> bool:
         return True

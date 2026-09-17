@@ -17,6 +17,10 @@ class Config:
     max_file_bytes: int = 10 * 1024 * 1024
     max_iocs: int = 1_000
     max_requests: int = 250
+    kev_cache_ttl: int = 24 * 60 * 60
+    max_asset_file_bytes: int = 10 * 1024 * 1024
+    max_asset_rows: int = 50_000
+    max_log_lines: int = 500_000
 
     # API Keys (populated after __post_init__)
     abuseipdb_key: Optional[str] = field(default=None, init=False)
@@ -27,6 +31,21 @@ class Config:
     # NVD (National Vulnerability Database) is free with no key required
     # but an optional key increases rate limits
     nvd_key: Optional[str] = field(default=None, init=False)
+
+    # SIEM export destinations (all optional; only exporters with complete
+    # configuration are made available)
+    splunk_hec_url: Optional[str] = field(default=None, init=False)
+    splunk_hec_token: Optional[str] = field(default=None, init=False)
+    splunk_index: Optional[str] = field(default=None, init=False)
+    elastic_url: Optional[str] = field(default=None, init=False)
+    elastic_api_key: Optional[str] = field(default=None, init=False)
+    elastic_index: Optional[str] = field(default=None, init=False)
+    sentinel_tenant_id: Optional[str] = field(default=None, init=False)
+    sentinel_client_id: Optional[str] = field(default=None, init=False)
+    sentinel_client_secret: Optional[str] = field(default=None, init=False)
+    sentinel_dce_endpoint: Optional[str] = field(default=None, init=False)
+    sentinel_dcr_immutable_id: Optional[str] = field(default=None, init=False)
+    sentinel_stream_name: Optional[str] = field(default=None, init=False)
 
     def __post_init__(self):
         if not 1 <= self.timeout <= 60:
@@ -39,6 +58,14 @@ class Config:
             raise ValueError("max_file_bytes must be between 1 byte and 100 MiB")
         if not 1 <= self.max_requests <= 10_000:
             raise ValueError("max_requests must be between 1 and 10000")
+        if not 60 <= self.kev_cache_ttl <= 7 * 24 * 60 * 60:
+            raise ValueError("kev_cache_ttl must be between 60 seconds and 7 days")
+        if not 1 <= self.max_asset_file_bytes <= 100 * 1024 * 1024:
+            raise ValueError("max_asset_file_bytes must be between 1 byte and 100 MiB")
+        if not 1 <= self.max_asset_rows <= 1_000_000:
+            raise ValueError("max_asset_rows must be between 1 and 1000000")
+        if not 1 <= self.max_log_lines <= 10_000_000:
+            raise ValueError("max_log_lines must be between 1 and 10000000")
         self._load_keys()
 
     def _load_keys(self):
@@ -58,6 +85,34 @@ class Config:
         self.urlscan_key = get("URLSCAN_API_KEY")
         self.nvd_key = get("NVD_API_KEY")
 
+        self.splunk_hec_url = get("SPLUNK_HEC_URL")
+        self.splunk_hec_token = get("SPLUNK_HEC_TOKEN")
+        self.splunk_index = get("SPLUNK_INDEX")
+        self.elastic_url = get("ELASTIC_URL")
+        self.elastic_api_key = get("ELASTIC_API_KEY")
+        self.elastic_index = get("ELASTIC_INDEX") or "threatlens-iocs"
+        self.sentinel_tenant_id = get("SENTINEL_TENANT_ID")
+        self.sentinel_client_id = get("SENTINEL_CLIENT_ID")
+        self.sentinel_client_secret = get("SENTINEL_CLIENT_SECRET")
+        self.sentinel_dce_endpoint = get("SENTINEL_DCE_ENDPOINT")
+        self.sentinel_dcr_immutable_id = get("SENTINEL_DCR_IMMUTABLE_ID")
+        self.sentinel_stream_name = get("SENTINEL_STREAM_NAME")
+
+    def configured_exporters(self) -> dict[str, bool]:
+        """Which SIEM exporters have complete configuration and can be used."""
+        return {
+            "splunk": bool(self.splunk_hec_url and self.splunk_hec_token),
+            "elastic": bool(self.elastic_url and self.elastic_api_key),
+            "sentinel": bool(
+                self.sentinel_tenant_id
+                and self.sentinel_client_id
+                and self.sentinel_client_secret
+                and self.sentinel_dce_endpoint
+                and self.sentinel_dcr_immutable_id
+                and self.sentinel_stream_name
+            ),
+        }
+
     def available_apis(self) -> dict[str, bool]:
         """Return which APIs have keys configured."""
         return {
@@ -67,6 +122,8 @@ class Config:
             "shodan": bool(self.shodan_key),
             "urlscan": bool(self.urlscan_key),
             "nvd": True,  # Free, no key required
+            "cisa_kev": True,  # Free, no key required
+            "epss": True,  # Free, no key required
         }
 
     def get_key(self, api_name: str) -> Optional[str]:

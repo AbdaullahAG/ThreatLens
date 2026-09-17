@@ -26,6 +26,17 @@ class IOC:
 
 
 @dataclass
+class AssetRecord:
+    """A single row of imported asset inventory data."""
+    criticality: str
+    hostname: Optional[str] = None
+    ip_address: Optional[str] = None
+    internet_facing: bool = False
+    owner: Optional[str] = None
+    product: Optional[str] = None
+
+
+@dataclass
 class EnrichmentResult:
     """
     Holds aggregated enrichment data for a single IOC
@@ -76,6 +87,13 @@ class EnrichmentResult:
     published_date: Optional[str] = None
     affected_products: list[str] = field(default_factory=list)
     references: list[str] = field(default_factory=list)
+
+    # Vulnerability intelligence (CISA KEV / EPSS)
+    epss_score: Optional[float] = None
+    epss_percentile: Optional[float] = None
+    cisa_kev: bool = False
+    cisa_kev_due_date: Optional[str] = None
+    cisa_kev_ransomware_use: bool = False
 
     # Per-source raw results (for verbose/JSON output)
     sources: dict[str, Any] = field(default_factory=dict)

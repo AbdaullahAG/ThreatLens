@@ -13,6 +13,8 @@ from src.enrichers.otx import OTXEnricher
 from src.enrichers.shodan import ShodanEnricher
 from src.enrichers.urlscan import URLScanEnricher
 from src.enrichers.nvd import NVDEnricher
+from src.enrichers.cisa_kev import CISAKEVEnricher
+from src.enrichers.epss import EPSSEnricher
 from src.utils.quota import RequestBudget
 
 logger = logging.getLogger("threatlens.registry")
@@ -25,6 +27,8 @@ ALL_ENRICHERS = [
     ShodanEnricher,
     URLScanEnricher,
     NVDEnricher,
+    CISAKEVEnricher,
+    EPSSEnricher,
 ]
 
 
@@ -32,10 +36,13 @@ def build_enrichers(
     config: Config,
     selected_apis: Optional[list[str]] = None,
     request_budget: Optional[RequestBudget] = None,
+    store: Optional[object] = None,
 ) -> list:
     """
     Instantiate all enrichers that have keys configured.
     If selected_apis is provided, only those are returned.
+    ``store`` is passed through to enrichers that cache bulk feeds locally
+    (e.g. CISA KEV); enrichers that don't need it simply ignore it.
     """
     enrichers = []
     available = config.available_apis()
@@ -55,7 +62,10 @@ def build_enrichers(
             timeout=config.timeout,
             delay=config.delay,
             request_budget=request_budget,
+            store=store,
         )
+        if api_name == "cisa_kev":
+            instance.cache_ttl_seconds = config.kev_cache_ttl
         if instance.is_available():
             enrichers.append(instance)
             logger.debug(f"Registered enricher: {api_name}")
