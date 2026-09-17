@@ -38,6 +38,9 @@ class ThreatLensEngine:
 
     def run(self) -> bool:
         try:
+            if getattr(self.args, 'import_assets', None):
+                self._import_assets()
+
             # 1. Collect IOCs
             iocs = self._collect_iocs()
             if not iocs:
@@ -55,7 +58,10 @@ class ThreatLensEngine:
 
             # 2. Build enrichers
             enrichers = build_enrichers(
-                self.config, selected_apis=self.args.apis, request_budget=self.request_budget
+                self.config,
+                selected_apis=self.args.apis,
+                request_budget=self.request_budget,
+                store=self.store,
             )
             if not enrichers:
                 console.print(
@@ -77,9 +83,20 @@ class ThreatLensEngine:
             investigation_id = self.store.record_investigation(results)
             console.print(f"[dim]Investigation recorded locally: {investigation_id}[/]")
 
-            # 5. Save reports
+            # 5. CVE Decision Cards (optional)
+            decision_cards = self._build_decision_cards(results) if getattr(self.args, 'decision_cards', False) else []
+
+            # 6. Save reports
             if not self.args.no_report:
                 self._save_reports(results)
+
+            # 7. SIEM export (optional, opt-in)
+            if getattr(self.args, 'export', None):
+                self._export_results(results)
+
+            # 8. Evidence pack (optional)
+            if getattr(self.args, 'evidence_pack', False):
+                self._build_evidence_pack(investigation_id, results, decision_cards)
 
             return True
 
@@ -89,6 +106,78 @@ class ThreatLensEngine:
         except Exception as e:
             self.logger.exception(f"Engine error: {e}")
             return False
+
+    def _import_assets(self) -> None:
+        """Import an asset inventory CSV, replacing any previous import."""
+        from src.assets.importer import AssetImportError, AssetImporter
+
+        console.print(f"[blue]📋 Importing asset inventory:[/] {self.args.import_assets}")
+        importer = AssetImporter(
+            max_file_bytes=self.config.max_asset_file_bytes,
+            max_rows=self.config.max_asset_rows,
+        )
+        try:
+            result = importer.import_file(self.args.import_assets)
+        except AssetImportError as exc:
+            console.print(f"[red]✗ Asset import failed:[/] {exc}")
+            return
+
+        count = self.store.replace_assets(result.assets, source_file=self.args.import_assets)
+        note = f" ([yellow]{len(result.skipped_rows)} row(s) skipped[/])" if result.skipped_rows else ""
+        console.print(f"[green]✓[/] Imported [cyan]{count}[/] asset(s){note}")
+        if result.truncated:
+            console.print(
+                f"[yellow]⚠ Asset row limit ({self.config.max_asset_rows}) reached; "
+                f"remaining rows were skipped.[/]"
+            )
+
+    def _build_decision_cards(self, results: List[EnrichmentResult]) -> list:
+        """Produce a Patch/Isolate/Monitor/Not-affected card for every CVE result."""
+        from src.decision.asset_correlation import correlate
+        from src.decision.cve_decision import decide
+        from src.models import IOCType
+
+        assets = self.store.list_assets()
+        cards = []
+        for result in results:
+            if result.ioc.ioc_type != IOCType.CVE:
+                continue
+            context = correlate(result, assets)
+            cards.append(decide(result, context))
+
+        if cards:
+            lines = "\n".join(f"[bold]{c.cve_id}[/]: [cyan]{c.decision.value}[/] — {c.reasons[0]}" for c in cards)
+            console.print(Panel(lines, title="[bold blue]CVE Decision Cards[/]", border_style="blue"))
+        return cards
+
+    def _export_results(self, results: List[EnrichmentResult]) -> None:
+        """Send results to opted-in, configured SIEM destinations."""
+        from src.exporters.dispatcher import build_exporters, export_results
+
+        exporters = build_exporters(
+            self.config, selected=self.args.export, verify_tls=not getattr(self.args, "export_insecure_tls", False)
+        )
+        if not exporters:
+            console.print(
+                "[yellow]⚠ No configured SIEM exporters match --export; "
+                "check the relevant settings in config/keys.env.[/]"
+            )
+            return
+
+        for outcome in export_results(exporters, results):
+            if outcome.success:
+                console.print(f"[green]✓ Exported {outcome.sent} event(s) to {outcome.exporter}[/]")
+            else:
+                console.print(f"[red]✗ Export to {outcome.exporter} failed:[/] {outcome.error}")
+
+    def _build_evidence_pack(self, investigation_id: str, results: List[EnrichmentResult], decision_cards: list) -> None:
+        from src.evidence.pack import EvidencePackBuilder
+
+        assets = self.store.list_assets() if decision_cards else None
+        path = EvidencePackBuilder(output_dir=self.args.output).build(
+            investigation_id, results, decision_cards=decision_cards or None, matched_assets=assets
+        )
+        console.print(f"[green]✓ Evidence pack saved:[/] [bold]{path}[/]")
 
     def _collect_iocs(self) -> List[IOC]:
         """Gather IOCs from CLI arguments and/or log file."""
@@ -107,23 +196,36 @@ class ThreatLensEngine:
 
         # Log file
         if self.args.file:
-            console.print(f"[blue]📂 Parsing log file:[/] {self.args.file}")
-            parse_result = parser.parse_file(self.args.file)
+            log_format = getattr(self.args, "log_format", "auto") or "auto"
+            if log_format == "auto":
+                log_format = self._detect_log_format(self.args.file)
 
-            # Print stats
-            s = parse_result.stats
-            console.print(
-                f"  Extracted → "
-                f"IPs: [cyan]{s['ip']}[/]  "
-                f"Domains: [cyan]{s['domain']}[/]  "
-                f"URLs: [cyan]{s['url']}[/]  "
-                f"Hashes: [cyan]{s['hash']}[/]  "
-                f"CVEs: [cyan]{s['cve']}[/]  "
-                f"[dim](skipped {s['ignored_private_ips']} private IPs)[/]"
-            )
-            iocs.extend(parse_result.iocs)
-            if parse_result.truncated:
-                console.print(f"[yellow]⚠ IOC limit ({self.config.max_iocs}) reached; remaining entries were skipped.[/]")
+            if log_format == "text":
+                console.print(f"[blue]📂 Parsing log file (text):[/] {self.args.file}")
+                parse_result = parser.parse_file(self.args.file)
+                s = parse_result.stats
+                console.print(
+                    f"  Extracted → "
+                    f"IPs: [cyan]{s['ip']}[/]  "
+                    f"Domains: [cyan]{s['domain']}[/]  "
+                    f"URLs: [cyan]{s['url']}[/]  "
+                    f"Hashes: [cyan]{s['hash']}[/]  "
+                    f"CVEs: [cyan]{s['cve']}[/]  "
+                    f"[dim](skipped {s['ignored_private_ips']} private IPs)[/]"
+                )
+                iocs.extend(parse_result.iocs)
+                if parse_result.truncated:
+                    console.print(f"[yellow]⚠ IOC limit ({self.config.max_iocs}) reached; remaining entries were skipped.[/]")
+            else:
+                console.print(f"[blue]📂 Parsing log file ({log_format}):[/] {self.args.file}")
+                log_result = self._parse_structured_log(log_format, self.args.file)
+                console.print(
+                    "  Extracted → " + "  ".join(f"[cyan]{k}[/]: {v}" for k, v in log_result.stats.items() if v)
+                    + (f"  [dim](skipped {log_result.malformed_lines} malformed lines)[/]" if log_result.malformed_lines else "")
+                )
+                iocs.extend(log_result.iocs)
+                if log_result.truncated:
+                    console.print("[yellow]⚠ Log parsing limit reached; remaining entries were skipped.[/]")
 
         # Deduplicate by value+type
         seen: set[str] = set()
@@ -138,10 +240,62 @@ class ThreatLensEngine:
             console.print(f"[yellow]⚠ IOC limit ({self.config.max_iocs}) reached; remaining entries were skipped.[/]")
         return unique[:self.config.max_iocs]
 
+    @staticmethod
+    def _detect_log_format(path: str) -> str:
+        """Best-effort format sniffing for --log-format auto."""
+        lower = path.lower()
+        if "eve" in lower and lower.endswith(".json"):
+            return "suricata"
+        if "sysmon" in lower:
+            return "sysmon"
+        if lower.endswith((".jsonl", ".ndjson")):
+            return "jsonl"
+        try:
+            with open(path, "r", encoding="utf-8", errors="replace") as handle:
+                first_line = handle.readline()
+        except OSError:
+            return "text"
+        stripped = first_line.strip()
+        if stripped.startswith("#separator") or stripped.startswith("#fields"):
+            return "zeek"
+        if stripped.startswith("{"):
+            return "jsonl"
+        return "text"
+
+    def _parse_structured_log(self, log_format: str, path: str):
+        max_bytes = self.config.max_file_bytes
+        max_lines = self.config.max_log_lines
+        max_iocs = self.config.max_iocs
+
+        if log_format == "zeek":
+            from src.parsers.zeek import ZeekParser
+            return ZeekParser(max_file_bytes=max_bytes, max_lines=max_lines, max_iocs=max_iocs).parse_file(path)
+        if log_format == "suricata":
+            from src.parsers.suricata import SuricataParser
+            return SuricataParser(max_file_bytes=max_bytes, max_lines=max_lines, max_iocs=max_iocs).parse_file(path)
+        if log_format == "sysmon":
+            from src.parsers.sysmon import SysmonParser
+            return SysmonParser(max_file_bytes=max_bytes, max_lines=max_lines, max_iocs=max_iocs).parse_file(path)
+        if log_format == "jsonl":
+            from src.parsers.jsonl import JSONLParser
+            return JSONLParser(max_file_bytes=max_bytes, max_lines=max_lines, max_iocs=max_iocs).parse_file(path)
+        raise ValueError(f"Unsupported log format: {log_format}")
+
     def _run_enrichment(
         self, iocs: List[IOC], enrichers: list
     ) -> List[EnrichmentResult]:
         results: List[EnrichmentResult] = []
+
+        # EPSS supports batch lookups; prefetch scores for every CVE in this
+        # run up front so bulk CVE scans cost a handful of requests instead
+        # of one request per CVE.
+        from src.models import IOCType
+
+        for enricher in enrichers:
+            if hasattr(enricher, "prefetch"):
+                cve_values = [i.value for i in iocs if i.ioc_type == IOCType.CVE]
+                if cve_values:
+                    enricher.prefetch(cve_values)
 
         with Progress(
             SpinnerColumn(),

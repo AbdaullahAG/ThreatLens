@@ -2,7 +2,7 @@
 """
 ThreatLens - Professional Threat Intelligence CLI Tool
 Author: Threat Intel Project
-Version: 2.1.0
+Version: 2.2.0
 """
 
 import sys
@@ -46,6 +46,12 @@ Examples:
 
   # Set custom output directory
   python main.py --file access.log --output /tmp/reports
+
+  # Import an asset inventory and get CVE decision cards
+  python main.py -c CVE-2021-44228 --import-assets assets.csv --decision-cards
+
+  # Parse a Suricata eve.json and export to Splunk, with an evidence pack
+  python main.py --file eve.json --log-format suricata --export splunk --evidence-pack
         """,
     )
 
@@ -85,6 +91,12 @@ Examples:
         metavar="PATH",
         help="Path to a log file — IPs, domains, hashes will be auto-extracted",
     )
+    ioc_group.add_argument(
+        "--log-format",
+        choices=["auto", "text", "zeek", "suricata", "sysmon", "jsonl"],
+        default="auto",
+        help="Format of --file (default: auto-detect from filename/content)",
+    )
 
     # --- Output Options ---
     out_group = parser.add_argument_group("Output Options")
@@ -111,9 +123,46 @@ Examples:
     api_group.add_argument(
         "--apis",
         nargs="+",
-        choices=["abuseipdb", "virustotal", "otx", "shodan", "urlscan", "nvd"],
+        choices=["abuseipdb", "virustotal", "otx", "shodan", "urlscan", "nvd", "cisa_kev", "epss"],
         metavar="API",
         help="Limit enrichment to specific APIs (default: all configured)",
+    )
+
+    # --- Vulnerability & SOC Triage (v2.2) ---
+    vuln_group = parser.add_argument_group("Vulnerability & SOC Triage")
+    vuln_group.add_argument(
+        "--import-assets",
+        metavar="CSV_PATH",
+        help="Import an asset inventory CSV (hostname/ip, criticality, internet_facing, owner, product) "
+             "before scanning; replaces any previously imported inventory",
+    )
+    vuln_group.add_argument(
+        "--decision-cards",
+        action="store_true",
+        help="Produce a Patch/Isolate/Monitor/Not-affected decision card for every CVE result, "
+             "correlated against the imported asset inventory",
+    )
+    vuln_group.add_argument(
+        "--evidence-pack",
+        action="store_true",
+        help="Package this investigation's results (and decision cards, if any) into a "
+             "hash-manifested ZIP evidence pack",
+    )
+
+    # --- SIEM Export ---
+    export_group = parser.add_argument_group("SIEM Export")
+    export_group.add_argument(
+        "--export",
+        nargs="+",
+        choices=["splunk", "elastic", "sentinel"],
+        metavar="DEST",
+        help="Send results to one or more configured SIEM destinations (opt-in; "
+             "credentials/endpoints are read from config/keys.env)",
+    )
+    export_group.add_argument(
+        "--export-insecure-tls",
+        action="store_true",
+        help="Disable TLS certificate verification for SIEM export (logged loudly; testing only)",
     )
 
     # --- Config / Misc ---
@@ -178,7 +227,7 @@ Examples:
     misc_group.add_argument(
         "--version",
         action="version",
-        version="ThreatLens v2.1.0",
+        version="ThreatLens v2.2.0",
     )
 
     return parser 
