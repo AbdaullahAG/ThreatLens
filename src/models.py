@@ -112,7 +112,16 @@ class EnrichmentResult:
 
         if self.ioc.ioc_type == IOCType.IP:
             score = self.abuse_score
-            if score >= 75:
+            # IP reputation is not limited to AbuseIPDB. VirusTotal and OTX
+            # both populate the vote fields for IPs, so do not classify an IP
+            # as clean merely because its AbuseIPDB score is low.
+            if self.malicious_votes > 0:
+                self.verdict = "Malicious"
+                self.explanation.append(f"{self.malicious_votes} malicious source signal(s) were returned.")
+            elif self.suspicious_votes > 0:
+                self.verdict = "Suspicious"
+                self.explanation.append(f"{self.suspicious_votes} suspicious source signal(s) were returned.")
+            elif score >= 75:
                 self.verdict = "Malicious"
                 self.explanation.append(f"AbuseIPDB confidence score is {score}%.")
             elif score >= 25:
