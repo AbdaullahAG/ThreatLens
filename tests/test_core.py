@@ -151,6 +151,21 @@ class TestEnrichmentResult:
         r.set_verdict()
         assert r.verdict == "Clean"
 
+    def test_ip_malicious_votes_override_low_abuse_score(self):
+        """VT/OTX evidence must not be masked by a low AbuseIPDB score."""
+        r = self._make(IOCType.IP)
+        r.abuse_score = 7
+        r.malicious_votes = 17
+        r.set_verdict()
+        assert r.verdict == "Malicious"
+
+    def test_ip_suspicious_votes_override_low_abuse_score(self):
+        r = self._make(IOCType.IP)
+        r.abuse_score = 0
+        r.suspicious_votes = 1
+        r.set_verdict()
+        assert r.verdict == "Suspicious"
+
     def test_domain_malicious(self):
         r = self._make(IOCType.DOMAIN)
         r.malicious_votes = 5
