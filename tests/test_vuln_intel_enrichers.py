@@ -6,12 +6,14 @@ feed-cache methods that back CISA KEV's local caching.
 from __future__ import annotations
 
 import time
+import json
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from src.enrichers.cisa_kev import CISAKEVEnricher
 from src.enrichers.epss import EPSSEnricher
+from src.enrichers.nvd import NVDEnricher
 from src.models import IOC, IOCType, EnrichmentResult
 from src.storage import InvestigationStore
 
@@ -20,6 +22,9 @@ def _mock_response(status: int, body: dict, content_type: str = "application/jso
     resp = MagicMock()
     resp.status_code = status
     resp.headers = {"Content-Type": content_type}
+    encoded = json.dumps(body).encode("utf-8")
+    resp.headers["Content-Length"] = str(len(encoded))
+    resp.iter_content.return_value = [encoded]
     resp.json.return_value = body
     return resp
 
@@ -86,7 +91,7 @@ class TestCISAKEVEnricher:
 
     def test_missing_fields_are_tolerated(self):
         """CISA may add/omit fields; the enricher must not crash on missing ones."""
-        feed = {"vulnerabilities": [{"cveID": "CVE-2020-0001"}]}
+        feed = {"vulnerabilities": [{"cveID": "CVE-2020-0001", "dateAdded": "2020-01-01"}]}
         enricher = self._enricher()
         with patch.object(enricher.session, "get", return_value=_mock_response(200, feed)):
             result = EnrichmentResult(ioc=IOC("CVE-2020-0001", IOCType.CVE))
@@ -152,3 +157,46 @@ class TestFeedCache:
         store.cache_feed("demo", {"a": 1}, now, now + 100)
         store.cache_feed("demo", {"a": 2}, now, now + 100)
         assert store.get_cached_feed("demo", now) == {"a": 2}
+
+
+class TestNVDResponseValidation:
+    def _enricher(self):
+        return NVDEnricher(api_key=None, timeout=5, delay=0.0)
+
+    @staticmethod
+    def _body(cve_id="CVE-2021-44228"):
+        return {
+            "vulnerabilities": [{
+                "cve": {
+                    "id": cve_id,
+                    "descriptions": [{"lang": "en", "value": "Remote code execution"}],
+                    "published": "2021-12-10T10:00:00.000",
+                    "metrics": {"cvssMetricV31": [{"cvssData": {"baseScore": 9.8, "baseSeverity": "CRITICAL"}}]},
+                    "configurations": [{"nodes": [{"cpeMatch": [{"criteria": "cpe:2.3:a:apache:log4j:2.14:*"}]}]}],
+                    "references": [{"url": "https://nvd.nist.gov/vuln/detail/CVE-2021-44228"}],
+                }
+            }],
+            "unexpected": {"secret": "ignored"},
+        }
+
+    def test_nvd_extracts_only_allowlisted_valid_fields(self):
+        enricher = self._enricher()
+        with patch.object(enricher.session, "get", return_value=_mock_response(200, self._body())):
+            result = enricher.enrich(
+                IOC("CVE-2021-44228", IOCType.CVE),
+                EnrichmentResult(ioc=IOC("CVE-2021-44228", IOCType.CVE)),
+            )
+        assert result.cvss_score == pytest.approx(9.8)
+        assert result.severity == "CRITICAL"
+        assert result.affected_products == ["Apache Log4J"]
+        assert result.references == ["https://nvd.nist.gov/vuln/detail/CVE-2021-44228"]
+
+    def test_nvd_rejects_response_for_different_requested_cve(self):
+        enricher = self._enricher()
+        with patch.object(enricher.session, "get", return_value=_mock_response(200, self._body("CVE-2020-0001"))):
+            result = enricher.enrich(
+                IOC("CVE-2021-44228", IOCType.CVE),
+                EnrichmentResult(ioc=IOC("CVE-2021-44228", IOCType.CVE)),
+            )
+        assert result.sources == {}
+        assert "nvd" in result.errors

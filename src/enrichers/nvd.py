@@ -7,6 +7,7 @@ https://nvd.nist.gov/developers/vulnerabilities
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
+from src.utils.security import allowlisted_object, api_cve, api_float, api_text, validate_ioc, IOCValidationError
 
 
 class NVDEnricher(BaseEnricher):
@@ -39,44 +40,61 @@ class NVDEnricher(BaseEnricher):
             result.errors[self.name] = "No data"
             return result
 
-        vulns = data.get("vulnerabilities", [])
-        if not vulns:
+        vulns = data.get("vulnerabilities")
+        if not isinstance(vulns, list) or not vulns:
             result.errors[self.name] = "CVE not found"
             return result
 
-        cve_item = vulns[0].get("cve", {})
+        envelope = allowlisted_object(vulns[0], {"cve"})
+        cve_item = allowlisted_object(
+            envelope.get("cve"),
+            {"id", "descriptions", "published", "metrics", "configurations", "references"},
+        )
+        if api_cve(cve_item.get("id")) != ioc.value.upper():
+            result.errors[self.name] = "Provider response did not match the requested CVE"
+            return result
 
         # Description (English preferred)
-        descriptions = cve_item.get("descriptions", [])
-        for desc in descriptions:
+        descriptions = cve_item.get("descriptions")
+        for raw_desc in descriptions[:50] if isinstance(descriptions, list) else []:
+            desc = allowlisted_object(raw_desc, {"lang", "value"})
             if desc.get("lang") == "en":
-                result.cve_description = desc.get("value")
+                result.cve_description = api_text(desc.get("value"), max_length=16_384)
                 break
 
         # Published date
-        result.published_date = cve_item.get("published", "")[:10]
+        published = api_text(cve_item.get("published"), max_length=64)
+        result.published_date = published[:10] if published and len(published) >= 10 else None
 
         # CVSS Score — try v3.1, then v3.0, then v2.0
-        metrics = cve_item.get("metrics", {})
+        metrics = allowlisted_object(cve_item.get("metrics"), {"cvssMetricV31", "cvssMetricV30", "cvssMetricV2"})
         cvss_data = None
         for version_key in ("cvssMetricV31", "cvssMetricV30", "cvssMetricV2"):
             metric_list = metrics.get(version_key)
-            if metric_list:
-                cvss_data = metric_list[0].get("cvssData", {})
+            if isinstance(metric_list, list) and metric_list:
+                metric = allowlisted_object(metric_list[0], {"cvssData"})
+                cvss_data = allowlisted_object(metric.get("cvssData"), {"baseScore", "baseSeverity"})
                 result.cvss_version = version_key.replace("cvssMetric", "CVSS ")
                 break
 
         if cvss_data:
-            result.cvss_score = cvss_data.get("baseScore")
-            result.severity = cvss_data.get("baseSeverity") or _score_to_severity(result.cvss_score)
+            result.cvss_score = api_float(cvss_data.get("baseScore"), maximum=10.0)
+            severity = api_text(cvss_data.get("baseSeverity"), max_length=16)
+            result.severity = severity.upper() if severity and severity.upper() in {"LOW", "MEDIUM", "HIGH", "CRITICAL"} else _score_to_severity(result.cvss_score)
 
         # Affected products (CPE)
         configurations = cve_item.get("configurations", [])
         products = set()
-        for config in configurations:
-            for node in config.get("nodes", []):
-                for cpe_match in node.get("cpeMatch", []):
-                    cpe = cpe_match.get("criteria", "")
+        for raw_config in configurations[:100] if isinstance(configurations, list) else []:
+            config = allowlisted_object(raw_config, {"nodes"})
+            for raw_node in config.get("nodes", [])[:100] if isinstance(config.get("nodes"), list) else []:
+                node = allowlisted_object(raw_node, {"cpeMatch"})
+                matches = node.get("cpeMatch")
+                for raw_match in matches[:200] if isinstance(matches, list) else []:
+                    cpe_match = allowlisted_object(raw_match, {"criteria"})
+                    cpe = api_text(cpe_match.get("criteria"), max_length=512) or ""
+                    if not cpe.startswith("cpe:2.3:"):
+                        continue
                     parts = cpe.split(":")
                     if len(parts) >= 5:
                         vendor = parts[3].replace("_", " ").title()
@@ -87,7 +105,15 @@ class NVDEnricher(BaseEnricher):
 
         # References
         refs = cve_item.get("references", [])
-        result.references = [r.get("url", "") for r in refs[:10]]
+        result.references = []
+        for raw_reference in refs[:10] if isinstance(refs, list) else []:
+            reference = allowlisted_object(raw_reference, {"url"})
+            url = api_text(reference.get("url"), max_length=2048)
+            if url:
+                try:
+                    result.references.append(validate_ioc(url, IOCType.URL))
+                except IOCValidationError:
+                    continue
 
         result.sources[self.name] = {
             "cvss_score": result.cvss_score,

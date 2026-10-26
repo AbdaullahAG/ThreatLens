@@ -7,6 +7,7 @@ https://otx.alienvault.com/api
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
+from src.utils.security import allowlisted_object, api_country, api_integer, api_text
 
 
 class OTXEnricher(BaseEnricher):
@@ -24,7 +25,18 @@ class OTXEnricher(BaseEnricher):
 
     def _get_section(self, ioc_type: str, ioc_value: str, section: str) -> dict | None:
         url = f"{self.BASE_URL}/{ioc_type}/{ioc_value}/{section}"
-        return self.get(url, headers=self._headers())
+        data = self.get(url, headers=self._headers())
+        if not isinstance(data, dict):
+            return None
+        return allowlisted_object(
+            data,
+            {"pulse_info", "country_code", "country_name", "asn", "reputation", "alexa", "analysis"},
+        )
+
+    @staticmethod
+    def _pulse_count(general: dict) -> int | None:
+        pulse_info = allowlisted_object(general.get("pulse_info"), {"count"})
+        return api_integer(pulse_info.get("count"), maximum=1_000_000)
 
     def enrich(self, ioc: IOC, result: EnrichmentResult) -> EnrichmentResult:
         if ioc.ioc_type == IOCType.IP:
@@ -43,18 +55,20 @@ class OTXEnricher(BaseEnricher):
             result.errors[self.name] = "No data"
             return result
 
-        pulse_info = general.get("pulse_info", {})
-        pulse_count = pulse_info.get("count", 0)
+        pulse_count = self._pulse_count(general)
+        if pulse_count is None:
+            result.errors[self.name] = "Provider response did not match the supported schema"
+            return result
 
         if not result.country:
-            result.country = general.get("country_code")
+            result.country = api_country(general.get("country_code"))
         if not result.asn:
-            result.asn = general.get("asn")
+            result.asn = api_text(general.get("asn"), max_length=32)
 
         result.sources[self.name] = {
             "pulse_count": pulse_count,
-            "country": general.get("country_name"),
-            "reputation": general.get("reputation", 0),
+            "country": api_text(general.get("country_name"), max_length=128),
+            "reputation": api_integer(general.get("reputation"), minimum=-10_000, maximum=10_000),
         }
 
         # Increase malicious vote count based on OTX pulses
@@ -68,12 +82,14 @@ class OTXEnricher(BaseEnricher):
             result.errors[self.name] = "No data"
             return result
 
-        pulse_info = general.get("pulse_info", {})
-        pulse_count = pulse_info.get("count", 0)
+        pulse_count = self._pulse_count(general)
+        if pulse_count is None:
+            result.errors[self.name] = "Provider response did not match the supported schema"
+            return result
 
         result.sources[self.name] = {
             "pulse_count": pulse_count,
-            "alexa": general.get("alexa"),
+            "alexa": api_integer(general.get("alexa"), maximum=100_000_000),
         }
         if pulse_count > 0:
             result.malicious_votes = max(result.malicious_votes, 1)
@@ -81,8 +97,8 @@ class OTXEnricher(BaseEnricher):
 
     def _enrich_url(self, ioc: IOC, result: EnrichmentResult) -> EnrichmentResult:
         # OTX URL lookup uses domain extraction
-        from urllib.parse import urlparse
-        domain = urlparse(ioc.value).netloc
+        from urllib.parse import urlsplit
+        domain = urlsplit(ioc.value).hostname
         if not domain:
             return result
         return self._enrich_domain(
@@ -100,12 +116,17 @@ class OTXEnricher(BaseEnricher):
             result.errors[self.name] = "No data"
             return result
 
-        pulse_info = general.get("pulse_info", {})
-        pulse_count = pulse_info.get("count", 0)
+        pulse_count = self._pulse_count(general)
+        if pulse_count is None:
+            result.errors[self.name] = "Provider response did not match the supported schema"
+            return result
 
+        analysis = allowlisted_object(general.get("analysis"), {"info"})
+        info = allowlisted_object(analysis.get("info"), {"results"})
+        analysis_results = allowlisted_object(info.get("results"), {"file_class"})
         result.sources[self.name] = {
             "pulse_count": pulse_count,
-            "file_class": general.get("analysis", {}).get("info", {}).get("results", {}).get("file_class"),
+            "file_class": api_text(analysis_results.get("file_class"), max_length=128),
         }
         if pulse_count > 0:
             result.malicious_votes = max(result.malicious_votes, 1)

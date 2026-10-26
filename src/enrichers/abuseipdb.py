@@ -7,6 +7,7 @@ https://www.abuseipdb.com/api
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
+from src.utils.security import allowlisted_object, api_country, api_hostname, api_hostname_list, api_integer, api_text
 
 
 class AbuseIPDBEnricher(BaseEnricher):
@@ -33,15 +34,22 @@ class AbuseIPDBEnricher(BaseEnricher):
             result.errors[self.name] = "No data returned"
             return result
 
-        d = data["data"]
-        result.abuse_score = d.get("abuseConfidenceScore", 0)
-        result.country = d.get("countryCode")
-        result.isp = d.get("isp")
-        result.domain = d.get("domain")
-        result.total_reports = d.get("totalReports", 0)
-        result.last_reported = d.get("lastReportedAt")
-        result.usage_type = d.get("usageType")
-        result.hostnames = d.get("hostnames") or []
+        d = allowlisted_object(
+            data.get("data"),
+            {"abuseConfidenceScore", "countryCode", "isp", "domain", "totalReports", "lastReportedAt", "usageType", "hostnames"},
+        )
+        score = api_integer(d.get("abuseConfidenceScore"), maximum=100)
+        if score is None:
+            result.errors[self.name] = "Provider response did not match the supported schema"
+            return result
+        result.abuse_score = score
+        result.country = api_country(d.get("countryCode"))
+        result.isp = api_text(d.get("isp"))
+        result.domain = api_hostname(d.get("domain"))
+        result.total_reports = api_integer(d.get("totalReports")) or 0
+        result.last_reported = api_text(d.get("lastReportedAt"), max_length=64)
+        result.usage_type = api_text(d.get("usageType"), max_length=128)
+        result.hostnames = api_hostname_list(d.get("hostnames"), max_items=100)
 
         # Store raw
         result.sources[self.name] = {

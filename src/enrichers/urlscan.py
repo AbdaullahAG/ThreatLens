@@ -7,6 +7,7 @@ https://urlscan.io/docs/api/
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
+from src.utils.security import allowlisted_object, api_country, api_integer, api_public_ip, api_text, validate_ioc, IOCValidationError
 
 
 class URLScanEnricher(BaseEnricher):
@@ -28,7 +29,8 @@ class URLScanEnricher(BaseEnricher):
 
     def enrich(self, ioc: IOC, result: EnrichmentResult) -> EnrichmentResult:
         if ioc.ioc_type == IOCType.URL:
-            query = f'page.url:"{ioc.value}"'
+            escaped_url = ioc.value.replace("\\", "\\\\").replace('"', '\\"')
+            query = f'page.url:"{escaped_url}"'
         elif ioc.ioc_type == IOCType.DOMAIN:
             query = f'domain:{ioc.value}'
         else:
@@ -40,20 +42,29 @@ class URLScanEnricher(BaseEnricher):
             headers=self._headers(),
         )
 
-        if not data or not data.get("results"):
+        results = data.get("results") if isinstance(data, dict) else None
+        if not isinstance(results, list) or not results:
             result.errors[self.name] = "No scan results found"
             return result
 
-        latest = data["results"][0]
-        page = latest.get("page", {})
-        verdicts = latest.get("verdicts", {})
-        overall = verdicts.get("overall", {})
+        latest = allowlisted_object(results[0], {"page", "verdicts", "_id", "screenshot"})
+        page = allowlisted_object(latest.get("page"), {"url", "domain", "ip", "country", "server"})
+        verdicts = allowlisted_object(latest.get("verdicts"), {"overall"})
+        overall = allowlisted_object(verdicts.get("overall"), {"malicious", "score"})
+        score = api_integer(overall.get("score"), maximum=100)
+        if score is None or not isinstance(overall.get("malicious", False), bool):
+            result.errors[self.name] = "Provider response did not match the supported schema"
+            return result
 
         result.urlscan_verdict = (
             "Malicious" if overall.get("malicious") else
-            "Suspicious" if overall.get("score", 0) > 30 else "Clean"
+            "Suspicious" if score > 30 else "Clean"
         )
-        result.urlscan_screenshot = latest.get("screenshot")
+        screenshot = api_text(latest.get("screenshot"), max_length=2048)
+        try:
+            result.urlscan_screenshot = validate_ioc(screenshot, IOCType.URL) if screenshot else None
+        except IOCValidationError:
+            result.urlscan_screenshot = None
 
         # Propagate verdict
         if result.urlscan_verdict == "Malicious":
@@ -63,15 +74,15 @@ class URLScanEnricher(BaseEnricher):
 
         result.sources[self.name] = {
             "verdict": result.urlscan_verdict,
-            "score": overall.get("score", 0),
+            "score": score,
             "screenshot": result.urlscan_screenshot,
-            "server": page.get("server"),
-            "ip": page.get("ip"),
-            "country": page.get("country"),
-            "scan_id": latest.get("_id"),
+            "server": api_text(page.get("server"), max_length=256),
+            "ip": api_public_ip(page.get("ip")),
+            "country": api_country(page.get("country")),
+            "scan_id": api_text(latest.get("_id"), max_length=128),
         }
 
         if not result.country:
-            result.country = page.get("country")
+            result.country = api_country(page.get("country"))
 
         return result

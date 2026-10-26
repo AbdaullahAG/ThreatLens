@@ -13,10 +13,13 @@ instead of hitting CISA on every IOC.
 from __future__ import annotations
 
 import time
+import re
+from datetime import date
 from typing import Optional
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
+from src.utils.security import allowlisted_object, api_cve, api_text
 
 FEED_NAME = "cisa_kev"
 
@@ -53,7 +56,7 @@ class CISAKEVEnricher(BaseEnricher):
 
         result.cisa_kev = True
         result.cisa_kev_due_date = entry.get("due_date")
-        result.cisa_kev_ransomware_use = str(entry.get("ransomware_use", "")).lower() == "known"
+        result.cisa_kev_ransomware_use = entry.get("ransomware_use") == "Known"
         result.sources[self.name] = {
             "listed": True,
             "vendor_project": entry.get("vendor_project"),
@@ -77,32 +80,91 @@ class CISAKEVEnricher(BaseEnricher):
         if self.store is not None:
             cached = self.store.get_cached_feed(FEED_NAME, now)
             if cached is not None:
-                return cached
+                clean_cache = self._validate_cached_catalog(cached)
+                if clean_cache is not None:
+                    return clean_cache
 
         raw = self.get(self.FEED_URL)
         if not raw or "vulnerabilities" not in raw:
             return None
 
         catalog: dict[str, dict] = {}
-        for item in raw.get("vulnerabilities", []):
-            if not isinstance(item, dict):
+        raw_items = raw.get("vulnerabilities")
+        if not isinstance(raw_items, list) or len(raw_items) > 10_000:
+            return None
+        for raw_item in raw_items:
+            item = allowlisted_object(
+                raw_item,
+                {"cveID", "vendorProject", "product", "vulnerabilityName", "dateAdded", "shortDescription", "requiredAction", "dueDate", "knownRansomwareCampaignUse"},
+            )
+            cve_id = api_cve(item.get("cveID"))
+            if cve_id is None:
                 continue
-            cve_id = item.get("cveID")
-            if not cve_id:
+            if not self._valid_date(item.get("dateAdded")):
                 continue
-            catalog[str(cve_id).upper()] = {
-                "vendor_project": item.get("vendorProject"),
-                "product": item.get("product"),
-                "vulnerability_name": item.get("vulnerabilityName"),
-                "date_added": item.get("dateAdded"),
-                "short_description": item.get("shortDescription"),
-                "required_action": item.get("requiredAction"),
-                "due_date": item.get("dueDate"),
-                "ransomware_use": item.get("knownRansomwareCampaignUse"),
+            due_date = item.get("dueDate")
+            if due_date is not None and not self._valid_date(due_date):
+                due_date = None
+            ransomware_use = item.get("knownRansomwareCampaignUse")
+            if ransomware_use not in {"Known", "Unknown"}:
+                ransomware_use = "Unknown"
+            catalog[cve_id] = {
+                "vendor_project": api_text(item.get("vendorProject"), max_length=256),
+                "product": api_text(item.get("product"), max_length=256),
+                "vulnerability_name": api_text(item.get("vulnerabilityName"), max_length=256),
+                "date_added": item["dateAdded"],
+                "short_description": api_text(item.get("shortDescription"), max_length=2048),
+                "required_action": api_text(item.get("requiredAction"), max_length=2048),
+                "due_date": due_date,
+                "ransomware_use": ransomware_use,
             }
 
         if self.store is not None:
             ttl = getattr(self, "cache_ttl_seconds", self.default_ttl_seconds)
             self.store.cache_feed(FEED_NAME, catalog, now, now + ttl)
 
+        return catalog
+
+    @staticmethod
+    def _valid_date(value: object) -> bool:
+        """Accept calendar-valid ISO dates from the CISA feed."""
+        if not isinstance(value, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", value):
+            return False
+        try:
+            date.fromisoformat(value)
+            return True
+        except ValueError:
+            return False
+
+    @classmethod
+    def _validate_cached_catalog(cls, value: object) -> dict[str, dict] | None:
+        """Revalidate normalized feed-cache data before using local persisted values."""
+        if not isinstance(value, dict) or len(value) > 10_000:
+            return None
+        catalog: dict[str, dict] = {}
+        allowed = {
+            "vendor_project", "product", "vulnerability_name", "date_added",
+            "short_description", "required_action", "due_date", "ransomware_use",
+        }
+        for raw_id, raw_entry in value.items():
+            cve_id = api_cve(raw_id)
+            entry = allowlisted_object(raw_entry, allowed)
+            if cve_id is None or not cls._valid_date(entry.get("date_added")):
+                continue
+            due_date = entry.get("due_date")
+            if due_date is not None and not cls._valid_date(due_date):
+                due_date = None
+            ransomware_use = entry.get("ransomware_use")
+            if ransomware_use not in {"Known", "Unknown"}:
+                ransomware_use = "Unknown"
+            catalog[cve_id] = {
+                "vendor_project": api_text(entry.get("vendor_project"), max_length=256),
+                "product": api_text(entry.get("product"), max_length=256),
+                "vulnerability_name": api_text(entry.get("vulnerability_name"), max_length=256),
+                "date_added": entry["date_added"],
+                "short_description": api_text(entry.get("short_description"), max_length=2048),
+                "required_action": api_text(entry.get("required_action"), max_length=2048),
+                "due_date": due_date,
+                "ransomware_use": ransomware_use,
+            }
         return catalog

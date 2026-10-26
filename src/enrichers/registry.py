@@ -16,6 +16,7 @@ from src.enrichers.nvd import NVDEnricher
 from src.enrichers.cisa_kev import CISAKEVEnricher
 from src.enrichers.epss import EPSSEnricher
 from src.utils.quota import RequestBudget
+from src.utils.security import IOCValidationError, redact_secrets, validate_ioc
 
 logger = logging.getLogger("threatlens.registry")
 
@@ -50,7 +51,7 @@ def build_enrichers(
     for cls in ALL_ENRICHERS:
         api_name = cls.name
         # Filter by user selection
-        if selected_apis and api_name not in selected_apis:
+        if selected_apis is not None and api_name not in selected_apis:
             continue
         # Check if API is available (key exists or free)
         if not available.get(api_name, False):
@@ -73,11 +74,33 @@ def build_enrichers(
     return enrichers
 
 
-def enrich_ioc(ioc: IOC, enrichers: list) -> EnrichmentResult:
+def enrich_ioc(
+    ioc: IOC,
+    enrichers: list,
+    external_ioc: Optional[IOC] = None,
+    *,
+    allow_private: bool = False,
+) -> EnrichmentResult:
     """
     Run all compatible enrichers against a single IOC.
     Returns a fully populated EnrichmentResult.
     """
+    try:
+        canonical_value = validate_ioc(ioc.value, ioc.ioc_type, allow_private=allow_private)
+        ioc = IOC(value=canonical_value, ioc_type=ioc.ioc_type)
+        if external_ioc is not None:
+            external_value = validate_ioc(
+                external_ioc.value, external_ioc.ioc_type, allow_private=allow_private
+            )
+            if external_ioc.ioc_type != ioc.ioc_type:
+                raise IOCValidationError("external IOC type does not match the local IOC")
+            external_ioc = IOC(value=external_value, ioc_type=external_ioc.ioc_type)
+    except IOCValidationError:
+        result = EnrichmentResult(ioc=ioc)
+        result.errors["validation"] = "IOC failed strict validation"
+        result.set_verdict()
+        return result
+
     result = EnrichmentResult(ioc=ioc)
 
     compatible = [e for e in enrichers if ioc.ioc_type in e.supports]
@@ -89,14 +112,14 @@ def enrich_ioc(ioc: IOC, enrichers: list) -> EnrichmentResult:
     for enricher in sorted(compatible, key=lambda item: item.name):
         try:
             logger.debug(f"  → {enricher.name}")
-            result = enricher.enrich(ioc, result)
+            result = enricher.enrich(external_ioc or ioc, result)
             result.set_verdict()
             if result.is_decisive():
                 result.explanation.append("Further provider lookups were skipped after a decisive signal.")
                 break
         except Exception as e:
-            logger.error(f"Enricher {enricher.name} crashed: {e}")
-            result.errors[enricher.name] = str(e)
+            logger.error("Enricher %s failed: %s", enricher.name, redact_secrets(e, enricher.api_key))
+            result.errors[enricher.name] = "Provider response could not be processed safely"
 
     # Derive final verdict after all enrichers have run
     result.set_verdict()

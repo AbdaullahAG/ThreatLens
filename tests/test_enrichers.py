@@ -18,6 +18,7 @@ Scenarios tested
 from __future__ import annotations
 
 import logging
+import json
 from unittest.mock import MagicMock, patch
 
 import requests
@@ -56,6 +57,9 @@ def _mock_response(status: int, body: dict | None = None, content_type: str = "a
     resp = MagicMock()
     resp.status_code = status
     resp.headers = {"Content-Type": content_type, **(headers or {})}
+    encoded = json.dumps(body).encode("utf-8") if body is not None else b""
+    resp.headers.setdefault("Content-Length", str(len(encoded)))
+    resp.iter_content.return_value = [encoded]
     if body is not None:
         resp.json.return_value = body
     else:

@@ -6,13 +6,12 @@ import logging
 import time
 from abc import ABC, abstractmethod
 from typing import Optional, TYPE_CHECKING
-from urllib.parse import urlsplit
 
 import requests
 
 from src.models import EnrichmentResult, IOC
 from src.utils.quota import RequestBudget
-from src.utils.security import redact_secrets
+from src.utils.security import bounded_json_response, redact_secrets, validate_https_endpoint
 
 if TYPE_CHECKING:
     from src.storage import InvestigationStore
@@ -40,6 +39,7 @@ class BaseEnricher(ABC):
         self.store = store
         self.logger = logging.getLogger(f"threatlens.{self.name}")
         self.session = requests.Session()
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": "ThreatLens/2.2"})
 
     def is_available(self) -> bool:
@@ -49,27 +49,37 @@ class BaseEnricher(ABC):
     def enrich(self, ioc: IOC, result: EnrichmentResult) -> EnrichmentResult:
         """Enrich ``result`` without propagating provider errors."""
 
-    def get(self, url: str, params: dict = None, headers: dict = None) -> Optional[dict]:
+    def get(
+        self,
+        url: str,
+        params: dict[str, str] | None = None,
+        headers: dict[str, str] | None = None,
+    ) -> Optional[dict]:
         """GET only an approved HTTPS host with a bounded retry and budget."""
-        parsed = urlsplit(url)
-        if parsed.scheme != "https" or parsed.hostname not in self.allowed_hosts:
+        if not validate_https_endpoint(url, self.allowed_hosts):
             self.logger.error("[%s] blocked unexpected provider endpoint", self.name)
             return None
         if self.request_budget and not self.request_budget.acquire(self.name):
             self.logger.warning("[%s] request budget exhausted", self.name)
             return None
         try:
-            response = self.session.get(url, params=params, headers=headers, timeout=self.timeout, allow_redirects=False)
+            response = self.session.get(
+                url, params=params, headers=headers, timeout=self.timeout,
+                allow_redirects=False, verify=True, stream=True,
+            )
             if response.status_code == 429:
                 return self._retry_once(url, params, headers, response)
             if response.status_code == 401:
                 self.logger.error("[%s] API key rejected", self.name)
+                response.close()
                 return None
             if response.status_code == 404:
                 self.logger.debug("[%s] IOC not found", self.name)
+                response.close()
                 return None
             if response.status_code != 200:
                 self.logger.warning("[%s] provider returned HTTP %s", self.name, response.status_code)
+                response.close()
                 return None
             return self._json_payload(response)
         except requests.exceptions.Timeout:
@@ -78,28 +88,44 @@ class BaseEnricher(ABC):
         except requests.RequestException as exc:
             self.logger.warning("[%s] request failed: %s", self.name, redact_secrets(exc, self.api_key))
             return None
-        except ValueError as exc:
-            self.logger.warning("[%s] invalid JSON response: %s", self.name, redact_secrets(exc, self.api_key))
+        except ValueError:
+            self.logger.warning("[%s] invalid or oversized JSON response", self.name)
             return None
         finally:
             if self.delay:
                 time.sleep(self.delay)
 
-    def _retry_once(self, url: str, params: dict | None, headers: dict | None, response) -> Optional[dict]:
+    def _retry_once(
+        self,
+        url: str,
+        params: dict[str, str] | None,
+        headers: dict[str, str] | None,
+        response: requests.Response,
+    ) -> Optional[dict]:
         try:
             seconds = min(max(int(response.headers.get("Retry-After", "1")), 1), 15)
         except ValueError:
             seconds = 1
+        response.close()
         self.logger.warning("[%s] rate limited; retrying once in %ss", self.name, seconds)
         time.sleep(seconds)
         if self.request_budget and not self.request_budget.acquire(self.name):
             return None
-        retry = self.session.get(url, params=params, headers=headers, timeout=self.timeout, allow_redirects=False)
-        return self._json_payload(retry) if retry.status_code == 200 else None
+        retry = self.session.get(
+            url, params=params, headers=headers, timeout=self.timeout,
+            allow_redirects=False, verify=True, stream=True,
+        )
+        if retry.status_code != 200:
+            retry.close()
+            return None
+        return self._json_payload(retry)
 
-    def _json_payload(self, response) -> Optional[dict]:
+    def _json_payload(self, response: requests.Response) -> Optional[dict]:
         if "json" not in response.headers.get("Content-Type", "").lower():
             self.logger.warning("[%s] provider returned a non-JSON response", self.name)
+            response.close()
             return None
-        payload = response.json()
-        return payload if isinstance(payload, dict) else None
+        payload = bounded_json_response(response)
+        if payload is None:
+            self.logger.warning("[%s] provider response failed size or structure validation", self.name)
+        return payload

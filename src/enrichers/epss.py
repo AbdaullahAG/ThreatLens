@@ -15,10 +15,12 @@ from typing import Iterable
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.enrichers.base import BaseEnricher
+from src.utils.security import allowlisted_object, api_cve, api_probability
 
 # FIRST.org accepts a comma-separated CVE list; keep batches modest to stay
 # well under typical URL / query-string length limits.
 _BATCH_SIZE = 100
+_MAX_PREFETCH_CVES = 1_000
 
 
 class EPSSEnricher(BaseEnricher):
@@ -37,15 +39,27 @@ class EPSSEnricher(BaseEnricher):
 
     def prefetch(self, cves: Iterable[str]) -> None:
         """Batch-fetch EPSS scores for many CVEs ahead of per-IOC enrichment."""
-        unique = sorted({cve.upper() for cve in cves if cve})
+        accepted: set[str] = set()
+        for value in cves:
+            cve_id = api_cve(value)
+            if cve_id:
+                accepted.add(cve_id)
+            if len(accepted) >= _MAX_PREFETCH_CVES:
+                break
+        unique = sorted(accepted)
         for start in range(0, len(unique), _BATCH_SIZE):
             batch = unique[start:start + _BATCH_SIZE]
             data = self.get(self.BASE_URL, params={"cve": ",".join(batch)})
             if not data:
                 continue
-            for row in data.get("data", []):
-                cve_id = str(row.get("cve", "")).upper()
-                if cve_id:
+            rows = data.get("data")
+            if not isinstance(rows, list):
+                continue
+            requested = set(batch)
+            for raw_row in rows[:_BATCH_SIZE]:
+                row = allowlisted_object(raw_row, {"cve", "epss", "percentile"})
+                cve_id = api_cve(row.get("cve"))
+                if cve_id in requested and api_probability(row.get("epss")) is not None:
                     self._cache[cve_id] = row
 
     def enrich(self, ioc: IOC, result: EnrichmentResult) -> EnrichmentResult:
@@ -57,7 +71,11 @@ class EPSSEnricher(BaseEnricher):
         if row is None:
             data = self.get(self.BASE_URL, params={"cve": cve_id})
             rows = data.get("data") if data else None
-            row = rows[0] if rows else None
+            row = allowlisted_object(rows[0], {"cve", "epss", "percentile"}) if isinstance(rows, list) and rows else None
+            if row and api_cve(row.get("cve")) != cve_id:
+                row = None
+            if row and api_probability(row.get("epss")) is None:
+                row = None
             if row:
                 self._cache[cve_id] = row
 
@@ -65,14 +83,8 @@ class EPSSEnricher(BaseEnricher):
             result.errors[self.name] = "No EPSS data"
             return result
 
-        try:
-            result.epss_score = float(row.get("epss"))
-        except (TypeError, ValueError):
-            result.epss_score = None
-        try:
-            result.epss_percentile = float(row.get("percentile"))
-        except (TypeError, ValueError):
-            result.epss_percentile = None
+        result.epss_score = api_probability(row.get("epss"))
+        result.epss_percentile = api_probability(row.get("percentile"))
 
         result.sources[self.name] = {
             "epss_score": result.epss_score,
