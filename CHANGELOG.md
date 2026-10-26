@@ -4,10 +4,22 @@ All notable changes to ThreatLens are documented here.
 
 ## Unreleased
 
+### Added
+- Privacy modes: standard, passive, approved-provider-only, and local-cache-only; `--privacy-preview` shows sanitized URL values and the destinations that would receive each IOC.
+- External URL lookups omit sensitive query parameters while retaining the original IOC locally.
+- Local SQLite IOC watchlist with expiry, add/list/remove/scan commands, and stored snapshots that report changes in verdict and key risk signals.
+
 ### Changed
 - `--no-cache` now bypasses both per-IOC enrichment results and provider feed caches. Investigation history remains independent; use `--no-history` to skip recording the current run.
 - Enrichment cache entries are scoped to the effective provider set for each IOC. Existing unscoped entries are migrated as `legacy-unscoped` and are not reused.
 - Evidence packs include only assets matched to the included CVE decision cards, and omit inventory database bookkeeping fields.
+- `--no-history` also prevents watchlist scan observations from being written, so subsequent comparisons use the last persisted observation.
+- External provider responses, CSV assets, JSONL logs, and file inputs now pass bounded size, structure, field, and IOC validation before use.
+- Enricher and SIEM HTTP requests enforce exact HTTPS host/authority allow-lists, disable redirects and ambient proxy settings, and cap request/response bodies.
+- Splunk and Elastic exports require separate exact host allow-lists (`SPLUNK_ALLOWED_HOSTS` / `ELASTIC_ALLOWED_HOSTS`) matching their configured destinations.
+- Secret redaction now covers generated reports, evidence packs, provider errors, and exporter logs; user-facing failures remain generic.
+- Spreadsheet formula neutralisation now detects formulas after leading whitespace. SQLite access continues to use parameterized statements; watchlist entries and observation storage have hard capacity limits.
+- Added mocked provider/exporter security tests and parser/input validation tests; the suite retains more than 60% total source coverage.
 
 ### Added
 - `--no-history` CLI option for runs that must not create an investigation-history record.

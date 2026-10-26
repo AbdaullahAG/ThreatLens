@@ -76,6 +76,8 @@ Built for SOC analysts, incident responders, threat hunters, and anyone who want
 | 🧾 **Evidence Packs** | ZIP export of an investigation with a SHA-256 manifest for basic chain-of-custody |
 | 📊 **Reports** | Excel (color-coded), JSON, CSV |
 | 💾 **Local Cache** | SQLite cache with configurable TTL — skip re-querying known IOCs, plus a cached CISA KEV feed (24h TTL) |
+| 🔐 **Privacy Controls** | Standard, passive, approved-provider-only, and local-cache-only modes; sensitive URL query parameters are removed before external lookups |
+| 👁️ **IOC Watchlist** | Local SQLite watchlist with expiry, manual scans, and change tracking for verdict and risk signals |
 | 🛡️ **Security** | Redirect blocking, host allow-listing, API-key redaction in logs, spreadsheet-formula neutralisation, CSV/log DoS limits |
 | 🔒 **Lockfile** | `requirements.lock` with SHA-256 hashes for reproducible installs |
 | 💻 **CLI Experience** | Rich progress bars, colored tables, and a clean verdict summary |
@@ -232,6 +234,14 @@ python main.py -i 45.33.32.156 --evidence-pack
 | `--cache-ttl` | Cache lifetime in seconds (default: 3600) |
 | `--no-cache` | Bypass IOC-result and provider-feed caches; history and asset inventory are unaffected |
 | `--no-history` | Do not save this run to local investigation history |
+| `--privacy-mode` | External lookup policy: `standard` \| `passive` \| `approved-only` \| `local-only` |
+| `--approved-apis` | Provider allow-list required for `approved-only` mode (combined with `--apis`, if supplied) |
+| `--privacy-preview` | Show original and sanitized IOCs, providers, and destinations before enrichment |
+| `--watchlist-add` | Add provided IOCs to the local watchlist |
+| `--watchlist-list` | List active local watchlist entries |
+| `--watchlist-remove` | Remove one or more `TYPE:VALUE` entries from the watchlist |
+| `--watchlist-scan` | Scan active watchlist entries and show changes since the previous stored observation |
+| `--watchlist-ttl-days` | Watchlist expiry on add (1-3650 days; default: 90) |
 | `--max-requests` | Cap on external API calls per run (default: 250) |
 | `--max-iocs` | Maximum unique IOCs per run (default: 1000) |
 | `--allow-private-iocs` | Allow private/loopback IPs (disabled by default) |
@@ -254,6 +264,29 @@ ThreatLens can go beyond IOC lookups into lightweight CVE triage and log ingesti
 - **Evidence packs** (`--evidence-pack`) bundle the investigation's results (and decision cards/matched assets, if produced) into a ZIP with a `manifest.json` recording a SHA-256 hash of every file inside.
 
 ---
+
+## 🔐 Privacy Controls and IOC Watchlist (v2.3)
+
+- `--privacy-mode passive` uses the configured read-only provider lookups. `--privacy-mode approved-only --approved-apis ...` restricts lookups to the named providers; only providers both approved and selected with `--apis` are used.
+- `--privacy-mode local-only` disables external requests and uses unexpired local enrichment cache entries when available. A cache miss is reported as `Unknown`.
+- URL query parameters with names associated with credentials or tokens are stripped from external lookups. The original IOC remains local for display and reports. Use `--privacy-preview` to review the original value, sanitized value, provider, and destination before the scan continues.
+- `--watchlist-add` stores supplied IOCs locally for 90 days by default (`--watchlist-ttl-days` changes this). `--watchlist-list` and `--watchlist-remove TYPE:VALUE` manage entries; `--watchlist-scan` bypasses IOC-result cache and compares fresh results with the last stored observation.
+- Watchlist membership and observations are local SQLite data. `--no-history` prevents a watchlist scan from saving its observation, so its next persisted scan compares with the last saved observation. `--no-cache` bypasses both IOC-result and provider-feed caches.
+
+```bash
+# Add an IOC and review its sanitized value and provider destinations
+python main.py --domain "https://example.com/path?access_token=secret" --watchlist-add --privacy-preview
+
+# Manage and scan local watchlist entries
+python main.py --watchlist-list
+python main.py --watchlist-scan --privacy-mode approved-only --approved-apis virustotal urlscan
+python main.py --watchlist-remove IP:8.8.8.8
+
+# Use local cached intelligence without contacting providers
+python main.py -i 8.8.8.8 --privacy-mode local-only --no-report
+```
+
+The watchlist stores IOC values and change snapshots in the local database. Protect the database file according to your incident-response data-handling policy.
 
 ## 🏗️ Architecture
 
@@ -352,7 +385,7 @@ threat_intel_tool/
 | [CISA KEV](https://www.cisa.gov/known-exploited-vulnerabilities-catalog) | Not needed | Free, no key |
 | [FIRST.org EPSS](https://www.first.org/epss/) | Not needed | Free, no key |
 
-SIEM export destinations (also read from `config/keys.env`, all optional and opt-in via `--export`): `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN`, `ELASTIC_URL` / `ELASTIC_API_KEY`, and `SENTINEL_TENANT_ID` / `SENTINEL_CLIENT_ID` / `SENTINEL_CLIENT_SECRET` / `SENTINEL_DCE_ENDPOINT` / `SENTINEL_DCR_IMMUTABLE_ID` / `SENTINEL_STREAM_NAME`.
+SIEM export destinations (also read from `config/keys.env`, all optional and opt-in via `--export`): `SPLUNK_HEC_URL` / `SPLUNK_HEC_TOKEN` / `SPLUNK_ALLOWED_HOSTS`, `ELASTIC_URL` / `ELASTIC_API_KEY` / `ELASTIC_ALLOWED_HOSTS`, and `SENTINEL_TENANT_ID` / `SENTINEL_CLIENT_ID` / `SENTINEL_CLIENT_SECRET` / `SENTINEL_DCE_ENDPOINT` / `SENTINEL_DCR_IMMUTABLE_ID` / `SENTINEL_STREAM_NAME`. The Splunk and Elastic allow-list variables are required comma-separated exact DNS names or IP addresses; wildcards are rejected.
 
 ---
 
@@ -380,8 +413,11 @@ pytest tests/test_cli_e2e.py --run-e2e -v
 | `test_cve_decision.py` | Every Patch/Isolate/Monitor/Not-affected branch, the KEV hard-floor rule, and validation |
 | `test_asset_importer.py` | Column validation, formula neutralisation, size/row DoS limits, storage persistence |
 | `test_asset_correlation.py` | Product-token matching, criticality/exposure aggregation, "no product data" vs "not matched" |
-| `test_log_parsers.py` | Zeek TSV, Suricata `eve.json`, Sysmon JSON, generic JSONL — malformed-line tolerance, private-IP rejection |
+| `test_log_parsers.py` | Zeek TSV, Suricata `eve.json`, Sysmon JSON, generic JSONL — malformed-line tolerance, private-IP rejection, oversized-line limits |
 | `test_exporters.py` | Splunk/Elastic/Sentinel — mocked HTTP, allow-list enforcement, secret redaction, retry/backoff, dispatcher fault isolation |
+| `test_provider_response_validation.py` | Mocked provider payloads — response field allow-lists, bounded scores, CVE validation, and EPSS batch limits |
+| `test_security_controls.py` | URL/host allow-lists, bounded HTTP bodies, IOC rules, spreadsheet formula safety, and secret redaction |
+| `test_watchlist.py` | Watchlist input validation, expiry, duplicate handling, and storage limits |
 | `test_evidence_pack.py` | ZIP contents, SHA-256 manifest integrity, secret redaction in packaged data |
 | `test_cli_e2e.py` | Full subprocess run: `python main.py -c CVE-2021-44228 --apis nvd --format json` → exit 0, valid JSON, correct verdict |
 
@@ -392,15 +428,18 @@ pytest tests/test_cli_e2e.py --run-e2e -v
 | Control | Implementation |
 |---|---|
 | HTTPS-only | `BaseEnricher.get()` / `BaseExporter._post()` reject any non-`https://` URL before making a request |
-| Host allow-list | Each enricher/exporter declares `allowed_hosts`; requests to unknown hosts are silently dropped |
-| Redirect blocking | All requests use `allow_redirects=False` |
+| Host allow-list | Enrichers use exact provider hosts; Splunk/Elastic require an independent exact host allow-list, and Sentinel restricts its ingestion domain and Entra login host |
+| Redirect blocking | All requests use `allow_redirects=False`; provider sessions ignore ambient proxy and netrc settings |
+| Bounded HTTP | Provider and exporter responses are streamed with byte limits; JSON structure, nesting, collection sizes, and accepted fields are bounded |
 | 429 / Retry-After | Single automatic retry respecting the `Retry-After` header (capped at 15 s); exporters retry with capped exponential backoff |
 | Request budget | `--max-requests` hard-caps total API calls per run |
-| API-key / secret redaction | Exceptions and log lines have raw key/token values replaced with `[REDACTED]`, including in exporter error paths and evidence packs |
-| Formula injection | All Excel/CSV cell values (including imported asset data) are sanitised with `spreadsheet_value()` |
+| API-key / secret redaction | Configured secrets and credential-like URL values are removed from logs, reports, SIEM exports, and evidence packs |
+| Formula injection | Excel/CSV values are neutralised with `spreadsheet_value()`, including formulas preceded by whitespace |
 | IOC validation | Every CLI-, log-, and CSV-supplied IOC/value is validated and normalised before use |
 | Private IP guard | Private/loopback addresses are rejected by default (`--allow-private-iocs` to override) |
-| CSV/log parsing | `csv.DictReader` and `json.loads` only — no `eval`/`exec`/`pickle`; streamed line-by-line with configurable file-size/row/line caps |
+| CSV/log parsing | Explicit CSV headers and IOC formats are allow-listed; logs stream line-by-line with file, line, row, and IOC caps. No `eval`, `exec`, or `pickle.loads` is used |
+| SQLite | Values are passed as bound SQL parameters; watchlist records and observations have fixed capacity limits |
+| Error handling | User-facing failures are generic; diagnostic details are redacted before logging |
 | TLS verification | Always on for SIEM export unless explicitly disabled with `--export-insecure-tls`, which logs a loud warning |
 | Deterministic decisions | CVE Decision Cards are an explicit rule table, not an LLM call or opaque score, so every recommendation is auditable |
 | Chain of custody | Evidence packs record a SHA-256 hash of every packaged file in `manifest.json` |
