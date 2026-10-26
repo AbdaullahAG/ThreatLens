@@ -16,13 +16,18 @@ Required configuration (read only from Config/keys.env, never hardcoded):
 from __future__ import annotations
 
 import time
-from urllib.parse import urlsplit
+import json
+import re
+import uuid
+from urllib.parse import quote, urlencode, urlsplit
 
 from src.exporters.base import BaseExporter, ExportResult
+from src.utils.security import allowlisted_object, api_text, validate_https_endpoint
 
 _LOGIN_HOST = "login.microsoftonline.com"
 _SCOPE = "https://monitor.azure.com/.default"
 _API_VERSION = "2023-01-01"
+_IDENTIFIER_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 
 
 class SentinelExporter(BaseExporter):
@@ -39,11 +44,30 @@ class SentinelExporter(BaseExporter):
         verify_tls: bool = True,
         **kwargs,
     ):
-        dce_host = urlsplit(dce_endpoint.rstrip("/")).hostname
+        parsed_dce = urlsplit(dce_endpoint.rstrip("/"))
+        dce_host = parsed_dce.hostname
+        if (
+            not dce_host
+            or not dce_host.lower().endswith(".ingest.monitor.azure.com")
+            or not validate_https_endpoint(
+                dce_endpoint.rstrip("/"), {dce_host},
+                allowed_authorities={(dce_host, parsed_dce.port)},
+            )
+            or parsed_dce.path not in ("", "/")
+            or not self._valid_tenant(tenant_id)
+            or not self._valid_guid(dcr_immutable_id)
+            or not _IDENTIFIER_RE.fullmatch(stream_name)
+        ):
+            raise ValueError("Sentinel destination or identifiers are invalid")
         allowed = {_LOGIN_HOST}
         if dce_host:
             allowed.add(dce_host)
-        super().__init__(allowed_hosts=allowed, verify_tls=verify_tls, **kwargs)
+        super().__init__(
+            allowed_hosts=allowed,
+            allowed_authorities={(_LOGIN_HOST, None), (dce_host, parsed_dce.port)},
+            verify_tls=verify_tls,
+            **kwargs,
+        )
 
         self.tenant_id = tenant_id
         self.client_id = client_id
@@ -51,12 +75,39 @@ class SentinelExporter(BaseExporter):
         self.dce_endpoint = dce_endpoint.rstrip("/")
         self.dcr_immutable_id = dcr_immutable_id
         self.stream_name = stream_name
+        self.allowed_query_keys = {"api-version"}
 
         self._token: str | None = None
         self._token_expires_at: float = 0.0
 
+    @staticmethod
+    def _valid_tenant(tenant_id: str) -> bool:
+        """Accept a tenant UUID, a validated DNS tenant name, or documented aliases."""
+        if tenant_id in {"common", "organizations", "consumers"}:
+            return True
+        try:
+            uuid.UUID(tenant_id)
+            return True
+        except (ValueError, TypeError, AttributeError):
+            try:
+                from src.models import IOCType
+                from src.utils.security import validate_ioc
+
+                validate_ioc(tenant_id, IOCType.DOMAIN)
+                return True
+            except (ValueError, TypeError):
+                return False
+
+    @staticmethod
+    def _valid_guid(value: str) -> bool:
+        """Accept only canonical UUID identifiers in the Sentinel URL path."""
+        try:
+            return str(uuid.UUID(value)) == value.lower()
+        except (ValueError, TypeError, AttributeError):
+            return False
+
     def _secrets(self) -> tuple[str, ...]:
-        secrets = [self.client_secret]
+        secrets = [self.client_secret, self.client_id, self.tenant_id]
         if self._token:
             secrets.append(self._token)
         return tuple(secrets)
@@ -65,12 +116,14 @@ class SentinelExporter(BaseExporter):
         if self._token and time.time() < self._token_expires_at - 60:
             return self._token
 
-        token_url = f"https://{_LOGIN_HOST}/{self.tenant_id}/oauth2/v2.0/token"
-        body = (
-            f"grant_type=client_credentials"
-            f"&client_id={self.client_id}"
-            f"&client_secret={self.client_secret}"
-            f"&scope={_SCOPE}"
+        token_url = f"https://{_LOGIN_HOST}/{quote(self.tenant_id, safe='')}/oauth2/v2.0/token"
+        body = urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+                "scope": _SCOPE,
+            }
         )
         response = self._post(
             token_url,
@@ -80,19 +133,26 @@ class SentinelExporter(BaseExporter):
         if response is None:
             return None
         try:
-            payload = response.json()
-        except ValueError:
+            payload = json.loads(response)
+        except (ValueError, TypeError):
             self.logger.error("[%s] token endpoint returned an invalid response", self.name)
             return None
 
-        token = payload.get("access_token")
+        payload = allowlisted_object(payload, {"access_token", "expires_in"})
+        token = api_text(payload.get("access_token"), max_length=8_192)
         expires_in = payload.get("expires_in", 3600)
         if not token:
             self.logger.error("[%s] no access token in Entra ID response", self.name)
             return None
 
         self._token = token
-        self._token_expires_at = time.time() + float(expires_in)
+        try:
+            ttl = float(expires_in)
+            if not 60 <= ttl <= 86_400:
+                raise ValueError
+        except (TypeError, ValueError):
+            ttl = 3_600
+        self._token_expires_at = time.time() + ttl
         return token
 
     def send_batch(self, events: list[dict]) -> ExportResult:

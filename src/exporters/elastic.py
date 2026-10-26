@@ -10,15 +10,25 @@ import json
 from urllib.parse import urlsplit
 
 from src.exporters.base import BaseExporter, ExportResult
+from src.utils.security import validate_https_endpoint
 
 
 class ElasticExporter(BaseExporter):
     name = "elastic"
 
     def __init__(self, elastic_url: str, api_key: str, index: str = "threatlens-iocs",
-                 verify_tls: bool = True, **kwargs):
-        host = urlsplit(elastic_url.rstrip("/")).hostname
-        super().__init__(allowed_hosts={host} if host else set(), verify_tls=verify_tls, **kwargs)
+                 verify_tls: bool = True, allowed_hosts: set[str] | None = None, **kwargs):
+        try:
+            parsed = urlsplit(elastic_url.rstrip("/"))
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+        except (TypeError, ValueError):
+            host, port = "", None
+        if not host or not allowed_hosts or host not in {value.lower() for value in allowed_hosts} or not validate_https_endpoint(
+            elastic_url.rstrip("/"), allowed_hosts, allowed_authorities={(host, port)}
+        ):
+            raise ValueError("Elasticsearch destination must match ELASTIC_ALLOWED_HOSTS and use a valid HTTPS URL")
+        super().__init__(allowed_hosts=allowed_hosts, allowed_authorities={(host, port)}, verify_tls=verify_tls, **kwargs)
         self.elastic_url = elastic_url.rstrip("/")
         self.api_key = api_key
         self.index = index

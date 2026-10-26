@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from unittest.mock import MagicMock, patch
 
 
@@ -12,17 +13,22 @@ from src.exporters.sentinel import SentinelExporter
 from src.exporters.splunk import SplunkExporter
 from src.utils.config import Config
 
+SPLUNK_HOSTS = {"splunk.internal"}
+ELASTIC_HOSTS = {"es.internal"}
+
 
 def _ok_response(body: dict | None = None, status: int = 200) -> MagicMock:
     resp = MagicMock()
     resp.status_code = status
-    resp.json.return_value = body or {}
+    encoded = json.dumps(body or {}).encode("utf-8")
+    resp.headers = {"Content-Length": str(len(encoded))}
+    resp.iter_content.return_value = [encoded]
     return resp
 
 
 class TestSplunkExporter:
     def test_send_batch_success(self):
-        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="secret-token")
+        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="secret-token", allowed_hosts=SPLUNK_HOSTS)
         with patch.object(exporter.session, "post", return_value=_ok_response()) as mock_post:
             result = exporter.send_batch([{"ioc": "8.8.8.8"}])
         assert result.success is True
@@ -32,7 +38,7 @@ class TestSplunkExporter:
         assert call_kwargs["verify"] is True
 
     def test_wrong_host_is_blocked_no_http_call(self):
-        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x")
+        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", allowed_hosts=SPLUNK_HOSTS)
         exporter.hec_url = "https://evil.example.com"  # simulate a tampered destination
         with patch.object(exporter.session, "post") as mock_post:
             result = exporter.send_batch([{"a": 1}])
@@ -40,7 +46,7 @@ class TestSplunkExporter:
         assert result.success is False
 
     def test_token_never_appears_in_error_logs(self, caplog):
-        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="SUPER-SECRET-TOKEN")
+        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="SUPER-SECRET-TOKEN", allowed_hosts=SPLUNK_HOSTS)
         import requests
         with patch.object(exporter.session, "post", side_effect=requests.exceptions.ConnectionError("SUPER-SECRET-TOKEN leaked in url")):
             with caplog.at_level("WARNING"):
@@ -49,19 +55,41 @@ class TestSplunkExporter:
 
     def test_insecure_tls_logs_warning(self, caplog):
         with caplog.at_level("WARNING"):
-            SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", verify_tls=False)
+            SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", allowed_hosts=SPLUNK_HOSTS, verify_tls=False)
         assert "DISABLED" in caplog.text
 
     def test_batching_respects_batch_size(self):
-        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", batch_size=2)
+        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", allowed_hosts=SPLUNK_HOSTS, batch_size=2)
         with patch.object(exporter.session, "post", return_value=_ok_response()) as mock_post:
             exporter.send_batch([{"i": i} for i in range(5)])
         assert mock_post.call_count == 3  # 2 + 2 + 1
 
+    def test_configured_destination_rejects_credentials_and_query(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            SplunkExporter(hec_url="https://user:pass@splunk.internal:8088", hec_token="x", allowed_hosts=SPLUNK_HOSTS)
+        with pytest.raises(ValueError):
+            SplunkExporter(hec_url="https://splunk.internal:8088/?token=secret", hec_token="x", allowed_hosts=SPLUNK_HOSTS)
+        with pytest.raises(ValueError, match="SPLUNK_ALLOWED_HOSTS"):
+            SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", allowed_hosts={"other.internal"})
+
+    def test_post_blocks_redirects_and_oversized_response(self):
+        exporter = SplunkExporter(hec_url="https://splunk.internal:8088", hec_token="x", allowed_hosts=SPLUNK_HOSTS)
+        response = _ok_response()
+        response.headers["Content-Length"] = str(2 * 1024 * 1024)
+        with patch.object(exporter.session, "post", return_value=response) as mock_post:
+            result = exporter.send_batch([{"a": 1}])
+        assert result.success is False
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["allow_redirects"] is False
+        assert kwargs["stream"] is True
+        response.close.assert_called_once()
+
 
 class TestElasticExporter:
     def test_send_batch_uses_bulk_ndjson(self):
-        exporter = ElasticExporter(elastic_url="https://es.internal:9200", api_key="key123")
+        exporter = ElasticExporter(elastic_url="https://es.internal:9200", api_key="key123", allowed_hosts=ELASTIC_HOSTS)
         with patch.object(exporter.session, "post", return_value=_ok_response()) as mock_post:
             result = exporter.send_batch([{"ioc": "8.8.8.8"}])
         assert result.success is True
@@ -71,7 +99,7 @@ class TestElasticExporter:
         assert "\n" in call_kwargs["data"]
 
     def test_server_error_retries_then_fails(self):
-        exporter = ElasticExporter(elastic_url="https://es.internal:9200", api_key="key123", max_retries=1, backoff_seconds=0)
+        exporter = ElasticExporter(elastic_url="https://es.internal:9200", api_key="key123", allowed_hosts=ELASTIC_HOSTS, max_retries=1, backoff_seconds=0)
         with patch.object(exporter.session, "post", return_value=_ok_response(status=503)) as mock_post:
             result = exporter.send_batch([{"a": 1}])
         assert mock_post.call_count == 2  # 1 initial + 1 retry
@@ -81,11 +109,11 @@ class TestElasticExporter:
 class TestSentinelExporter:
     def _exporter(self, **overrides):
         defaults = dict(
-            tenant_id="tenant-1",
+            tenant_id="123e4567-e89b-12d3-a456-426614174000",
             client_id="client-1",
             client_secret="super-secret",
             dce_endpoint="https://my-dce.eastus-1.ingest.monitor.azure.com",
-            dcr_immutable_id="dcr-123",
+            dcr_immutable_id="123e4567-e89b-12d3-a456-426614174000",
             stream_name="Custom-ThreatLens",
         )
         defaults.update(overrides)
@@ -99,7 +127,7 @@ class TestSentinelExporter:
         assert result.success is True
         urls_called = [call.args[0] for call in mock_post.call_args_list]
         assert "login.microsoftonline.com" in urls_called[0]
-        assert "dataCollectionRules/dcr-123/streams/Custom-ThreatLens" in urls_called[1]
+        assert "dataCollectionRules/123e4567-e89b-12d3-a456-426614174000/streams/Custom-ThreatLens" in urls_called[1]
         assert "collector.azure.com" not in " ".join(urls_called)  # not the legacy endpoint
 
     def test_token_is_cached_across_batches(self):
@@ -119,15 +147,41 @@ class TestSentinelExporter:
         assert result.success is False
         assert mock_post.call_count == 1  # only the (failed) token call
 
+    def test_dce_destination_must_match_azure_ingestion_domain_allow_list(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            self._exporter(dce_endpoint="https://169.254.169.254/latest/meta-data")
+
 
 class TestDispatcher:
     def test_only_fully_configured_exporters_are_built(self, tmp_path):
         env_path = tmp_path / "keys.env"
-        env_path.write_text("SPLUNK_HEC_URL=https://splunk.internal:8088\nSPLUNK_HEC_TOKEN=tok\n")
+        env_path.write_text("SPLUNK_HEC_URL=https://splunk.internal:8088\nSPLUNK_HEC_TOKEN=tok\nSPLUNK_ALLOWED_HOSTS=splunk.internal\n")
         config = Config(config_path=str(env_path))
         exporters = build_exporters(config)
         names = {e.name for e in exporters}
         assert names == {"splunk"}
+
+    def test_custom_exporters_require_explicit_matching_host_allowlist(self, tmp_path):
+        env_path = tmp_path / "keys.env"
+        env_path.write_text("SPLUNK_HEC_URL=https://splunk.internal:8088\nSPLUNK_HEC_TOKEN=tok\n")
+        assert build_exporters(Config(config_path=str(env_path))) == []
+
+        env_path.write_text(
+            "SPLUNK_HEC_URL=https://splunk.internal:8088\n"
+            "SPLUNK_HEC_TOKEN=tok\n"
+            "SPLUNK_ALLOWED_HOSTS=other.internal\n"
+        )
+        assert build_exporters(Config(config_path=str(env_path))) == []
+
+        env_path.write_text(
+            "SPLUNK_HEC_URL=https://splunk.internal:8088\n"
+            "SPLUNK_HEC_TOKEN=tok\n"
+            "SPLUNK_ALLOWED_HOSTS=splunk.internal\n"
+        )
+        exporters = build_exporters(Config(config_path=str(env_path)))
+        assert [exporter.name for exporter in exporters] == ["splunk"]
 
     def test_no_config_builds_no_exporters(self, tmp_path):
         config = Config(config_path=str(tmp_path / "missing.env"))
@@ -149,4 +203,5 @@ class TestDispatcher:
         assert len(outcomes) == 2
         assert outcomes[0].success is True
         assert outcomes[1].success is False
-        assert "boom" in outcomes[1].error
+        assert "boom" not in outcomes[1].error
+        assert "failed" in outcomes[1].error.lower()

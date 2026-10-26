@@ -18,16 +18,19 @@ POSTing batches of events instead of GETting enrichment data:
 
 from __future__ import annotations
 
+import json
 import logging
 import time
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Any, Optional
-from urllib.parse import urlsplit
+from typing import Any, Iterator, Optional
 
 import requests
 
-from src.utils.security import redact_secrets
+from src.utils.security import bounded_response_bytes, redact_secrets, validate_https_endpoint
+
+MAX_EXPORT_RESPONSE_BYTES = 1 * 1024 * 1024
+MAX_EXPORT_REQUEST_BYTES = 10 * 1024 * 1024
 
 
 @dataclass
@@ -42,10 +45,12 @@ class ExportResult:
 
 class BaseExporter(ABC):
     name: str = "base"
+    allowed_query_keys: set[str] = set()
 
     def __init__(
         self,
         allowed_hosts: set[str],
+        allowed_authorities: set[tuple[str, int | None]] | None = None,
         timeout: int = 15,
         max_retries: int = 2,
         backoff_seconds: float = 1.0,
@@ -59,6 +64,7 @@ class BaseExporter(ABC):
                 self.name,
             )
         self.allowed_hosts = allowed_hosts
+        self.allowed_authorities = allowed_authorities or {(host, None) for host in allowed_hosts}
         self.timeout = timeout
         self.max_retries = max_retries
         self.backoff_seconds = backoff_seconds
@@ -66,6 +72,7 @@ class BaseExporter(ABC):
         self.batch_size = batch_size
         self.logger = logging.getLogger(f"threatlens.export.{self.name}")
         self.session = requests.Session()
+        self.session.trust_env = False
         self.session.headers.update({"User-Agent": "ThreatLens/2.2"})
 
     @abstractmethod
@@ -83,11 +90,27 @@ class BaseExporter(ABC):
         data: Any = None,
         json_body: Any = None,
         headers: Optional[dict] = None,
-    ) -> Optional[requests.Response]:
-        """POST to an allow-listed HTTPS host with bounded retry/backoff."""
-        parsed = urlsplit(url)
-        if parsed.scheme != "https" or parsed.hostname not in self.allowed_hosts:
+    ) -> Optional[bytes]:
+        """POST bounded data to an allow-listed HTTPS host with capped retries."""
+        if not validate_https_endpoint(
+            url, self.allowed_hosts, allowed_query_keys=self.allowed_query_keys,
+            allowed_authorities=self.allowed_authorities,
+        ):
             self.logger.error("[%s] blocked POST to non-allow-listed destination", self.name)
+            return None
+
+        try:
+            if data is not None:
+                body_size = len(data if isinstance(data, bytes) else str(data).encode("utf-8"))
+            elif json_body is not None:
+                body_size = len(json.dumps(json_body, default=str).encode("utf-8"))
+            else:
+                body_size = 0
+        except (TypeError, ValueError):
+            self.logger.error("[%s] request body could not be serialized safely", self.name)
+            return None
+        if body_size > MAX_EXPORT_REQUEST_BYTES:
+            self.logger.error("[%s] request body exceeds configured size limit", self.name)
             return None
 
         attempt = 0
@@ -101,6 +124,7 @@ class BaseExporter(ABC):
                     timeout=self.timeout,
                     verify=self.verify_tls,
                     allow_redirects=False,
+                    stream=True,
                 )
             except requests.RequestException as exc:
                 self.logger.warning(
@@ -111,12 +135,18 @@ class BaseExporter(ABC):
                 response = None
 
             if response is not None and response.status_code < 300:
-                return response
+                body = bounded_response_bytes(response, MAX_EXPORT_RESPONSE_BYTES)
+                if body is None:
+                    self.logger.warning("[%s] destination response exceeded size limit", self.name)
+                return body
             if response is not None and response.status_code not in (429, 500, 502, 503, 504):
                 self.logger.warning(
                     "[%s] destination returned HTTP %s", self.name, response.status_code
                 )
+                response.close()
                 return None
+            if response is not None:
+                response.close()
 
             attempt += 1
             if attempt > self.max_retries:
@@ -125,6 +155,6 @@ class BaseExporter(ABC):
             time.sleep(self.backoff_seconds * (2 ** (attempt - 1)))
 
     @staticmethod
-    def chunk(items: list, size: int):
+    def chunk(items: list[Any], size: int) -> Iterator[list[Any]]:
         for start in range(0, len(items), size):
             yield items[start:start + size]

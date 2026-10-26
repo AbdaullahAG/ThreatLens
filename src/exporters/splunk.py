@@ -9,15 +9,26 @@ import json
 from urllib.parse import urlsplit
 
 from src.exporters.base import BaseExporter, ExportResult
+from src.utils.security import validate_https_endpoint
 
 
 class SplunkExporter(BaseExporter):
     name = "splunk"
 
     def __init__(self, hec_url: str, hec_token: str, index: str | None = None,
-                 sourcetype: str = "threatlens", verify_tls: bool = True, **kwargs):
-        host = urlsplit(hec_url.rstrip("/")).hostname
-        super().__init__(allowed_hosts={host} if host else set(), verify_tls=verify_tls, **kwargs)
+                 sourcetype: str = "threatlens", verify_tls: bool = True,
+                 allowed_hosts: set[str] | None = None, **kwargs):
+        try:
+            parsed = urlsplit(hec_url.rstrip("/"))
+            host = (parsed.hostname or "").lower()
+            port = parsed.port
+        except (TypeError, ValueError):
+            host, port = "", None
+        if not host or not allowed_hosts or host not in {value.lower() for value in allowed_hosts} or not validate_https_endpoint(
+            hec_url.rstrip("/"), allowed_hosts, allowed_authorities={(host, port)}
+        ):
+            raise ValueError("Splunk destination must match SPLUNK_ALLOWED_HOSTS and use a valid HTTPS URL")
+        super().__init__(allowed_hosts=allowed_hosts, allowed_authorities={(host, port)}, verify_tls=verify_tls, **kwargs)
         self.hec_url = hec_url.rstrip("/")
         self.hec_token = hec_token
         self.index = index

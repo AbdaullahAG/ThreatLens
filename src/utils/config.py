@@ -3,10 +3,12 @@ Config Manager — loads API keys from environment file or system env vars.
 """
 
 import os
+import ipaddress
 from pathlib import Path
 from dataclasses import dataclass, field
 from typing import Optional
 from dotenv import dotenv_values
+from src.utils.security import api_hostname
 
 
 @dataclass
@@ -36,9 +38,11 @@ class Config:
     # configuration are made available)
     splunk_hec_url: Optional[str] = field(default=None, init=False)
     splunk_hec_token: Optional[str] = field(default=None, init=False)
+    splunk_allowed_hosts: set[str] = field(default_factory=set, init=False)
     splunk_index: Optional[str] = field(default=None, init=False)
     elastic_url: Optional[str] = field(default=None, init=False)
     elastic_api_key: Optional[str] = field(default=None, init=False)
+    elastic_allowed_hosts: set[str] = field(default_factory=set, init=False)
     elastic_index: Optional[str] = field(default=None, init=False)
     sentinel_tenant_id: Optional[str] = field(default=None, init=False)
     sentinel_client_id: Optional[str] = field(default=None, init=False)
@@ -87,9 +91,11 @@ class Config:
 
         self.splunk_hec_url = get("SPLUNK_HEC_URL")
         self.splunk_hec_token = get("SPLUNK_HEC_TOKEN")
+        self.splunk_allowed_hosts = self._parse_allowed_hosts(get("SPLUNK_ALLOWED_HOSTS"))
         self.splunk_index = get("SPLUNK_INDEX")
         self.elastic_url = get("ELASTIC_URL")
         self.elastic_api_key = get("ELASTIC_API_KEY")
+        self.elastic_allowed_hosts = self._parse_allowed_hosts(get("ELASTIC_ALLOWED_HOSTS"))
         self.elastic_index = get("ELASTIC_INDEX") or "threatlens-iocs"
         self.sentinel_tenant_id = get("SENTINEL_TENANT_ID")
         self.sentinel_client_id = get("SENTINEL_CLIENT_ID")
@@ -101,8 +107,8 @@ class Config:
     def configured_exporters(self) -> dict[str, bool]:
         """Which SIEM exporters have complete configuration and can be used."""
         return {
-            "splunk": bool(self.splunk_hec_url and self.splunk_hec_token),
-            "elastic": bool(self.elastic_url and self.elastic_api_key),
+            "splunk": bool(self.splunk_hec_url and self.splunk_hec_token and self.splunk_allowed_hosts),
+            "elastic": bool(self.elastic_url and self.elastic_api_key and self.elastic_allowed_hosts),
             "sentinel": bool(
                 self.sentinel_tenant_id
                 and self.sentinel_client_id
@@ -112,6 +118,23 @@ class Config:
                 and self.sentinel_stream_name
             ),
         }
+
+    @staticmethod
+    def _parse_allowed_hosts(value: Optional[str]) -> set[str]:
+        """Parse an exact comma-separated DNS/IP allow-list; wildcards are rejected."""
+        hosts: set[str] = set()
+        if not value:
+            return hosts
+        for item in value.split(","):
+            candidate = item.strip()
+            try:
+                normalized = str(ipaddress.ip_address(candidate))
+            except ValueError:
+                normalized = api_hostname(candidate) or ""
+            if not normalized:
+                raise ValueError("Configured exporter host allow-list is invalid")
+            hosts.add(normalized)
+        return hosts
 
     def available_apis(self) -> dict[str, bool]:
         """Return which APIs have keys configured."""
@@ -136,3 +159,12 @@ class Config:
             "nvd": self.nvd_key,
         }
         return key_map.get(api_name)
+
+    def secret_values(self) -> tuple[str, ...]:
+        """Return configured credential values for output and diagnostic redaction."""
+        values = (
+            self.abuseipdb_key, self.virustotal_key, self.otx_key, self.shodan_key,
+            self.urlscan_key, self.nvd_key, self.splunk_hec_token, self.elastic_api_key,
+            self.sentinel_client_secret,
+        )
+        return tuple(value for value in values if value)
