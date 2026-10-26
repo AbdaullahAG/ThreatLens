@@ -128,6 +128,54 @@ Examples:
         help="Limit enrichment to specific APIs (default: all configured)",
     )
 
+    # --- Privacy & Watchlist Monitoring (v2.3) ---
+    privacy_group = parser.add_argument_group("Privacy & Watchlist Monitoring")
+    privacy_group.add_argument(
+        "--privacy-mode",
+        choices=["standard", "passive", "approved-only", "local-only"],
+        default="standard",
+        help="Control external enrichment: standard, read-only passive, approved providers only, or local cache only",
+    )
+    privacy_group.add_argument(
+        "--approved-apis",
+        nargs="+",
+        choices=["abuseipdb", "virustotal", "otx", "shodan", "urlscan", "nvd", "cisa_kev", "epss"],
+        metavar="API",
+        help="Provider allow-list required with --privacy-mode approved-only",
+    )
+    privacy_group.add_argument(
+        "--privacy-preview",
+        action="store_true",
+        help="Show sanitized IOC values and external destinations before enrichment",
+    )
+    privacy_group.add_argument(
+        "--watchlist-add",
+        action="store_true",
+        help="Add the supplied IOCs to the local watchlist",
+    )
+    privacy_group.add_argument(
+        "--watchlist-list",
+        action="store_true",
+        help="List active local watchlist entries and exit",
+    )
+    privacy_group.add_argument(
+        "--watchlist-remove",
+        nargs="+",
+        metavar="TYPE:VALUE",
+        help="Remove watchlist entries, e.g. IP:8.8.8.8 or URL:https://example.com/a",
+    )
+    privacy_group.add_argument(
+        "--watchlist-scan",
+        action="store_true",
+        help="Enrich all active watchlist entries and report changes from their last observation",
+    )
+    privacy_group.add_argument(
+        "--watchlist-ttl-days",
+        type=int,
+        default=90,
+        help="Expiry applied when adding IOCs to the watchlist (1-3650 days; default: 90)",
+    )
+
     # --- Vulnerability & SOC Triage (v2.2) ---
     vuln_group = parser.add_argument_group("Vulnerability & SOC Triage")
     vuln_group.add_argument(
@@ -241,7 +289,12 @@ Examples:
 def validate_args(args: argparse.Namespace) -> bool:
     """Ensure at least one IOC source is provided."""
     has_input = any([args.ip, args.domain, args.hash, args.cve, args.file])
-    if not has_input:
+    standalone_watchlist_action = bool(
+        getattr(args, "watchlist_list", False)
+        or getattr(args, "watchlist_remove", None)
+        or getattr(args, "watchlist_scan", False)
+    )
+    if not has_input and not standalone_watchlist_action:
         console.print(
             Panel(
                 "[bold red]Error:[/] No IOC provided.\n\n"
@@ -253,6 +306,19 @@ def validate_args(args: argparse.Namespace) -> bool:
                 border_style="red",
             )
         )
+        return False
+    if getattr(args, "watchlist_list", False) and (
+        has_input or getattr(args, "watchlist_remove", None) or getattr(args, "watchlist_scan", False)
+    ):
+        console.print("[red]--watchlist-list must be used by itself.[/]")
+        return False
+    if getattr(args, "watchlist_remove", None) and (
+        has_input or getattr(args, "watchlist_scan", False) or getattr(args, "watchlist_add", False)
+    ):
+        console.print("[red]--watchlist-remove must be used without IOC inputs, --watchlist-add, or --watchlist-scan.[/]")
+        return False
+    if getattr(args, "watchlist_scan", False) and (has_input or getattr(args, "watchlist_add", False)):
+        console.print("[red]--watchlist-scan loads its IOCs from the watchlist; do not provide other inputs or --watchlist-add.[/]")
         return False
     return True
 
@@ -267,6 +333,15 @@ def main():
     # Validate
     if not validate_args(args):
         sys.exit(1)
+
+    if args.privacy_mode == "approved-only" and not args.approved_apis:
+        parser.error("--privacy-mode approved-only requires --approved-apis")
+    if args.approved_apis and args.privacy_mode != "approved-only":
+        parser.error("--approved-apis can only be used with --privacy-mode approved-only")
+    if args.export and args.privacy_mode != "standard":
+        parser.error("--export requires --privacy-mode standard; exporters are separate external destinations")
+    if not 1 <= args.watchlist_ttl_days <= 3650:
+        parser.error("--watchlist-ttl-days must be between 1 and 3650")
 
     # Setup logger
     logger = setup_logger(verbose=args.verbose)

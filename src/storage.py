@@ -10,6 +10,10 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from src.models import AssetRecord, EnrichmentResult, IOC
+from src.utils.security import validate_ioc
+
+MAX_WATCHLIST_ENTRIES = 10_000
+MAX_WATCHLIST_OBSERVATIONS = 100_000
 
 
 class InvestigationStore:
@@ -89,6 +93,23 @@ class InvestigationStore:
                 );
                 CREATE INDEX IF NOT EXISTS idx_assets_hostname ON assets (hostname);
                 CREATE INDEX IF NOT EXISTS idx_assets_ip ON assets (ip_address);
+                CREATE TABLE IF NOT EXISTS watchlist (
+                    ioc_type TEXT NOT NULL,
+                    ioc_value TEXT NOT NULL,
+                    added_at TEXT NOT NULL,
+                    expires_at INTEGER,
+                    PRIMARY KEY (ioc_type, ioc_value)
+                );
+                CREATE TABLE IF NOT EXISTS watchlist_observations (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    ioc_type TEXT NOT NULL,
+                    ioc_value TEXT NOT NULL,
+                    observed_at TEXT NOT NULL,
+                    snapshot TEXT NOT NULL,
+                    changed_fields TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS idx_watchlist_observations_latest
+                    ON watchlist_observations (ioc_type, ioc_value, id DESC);
                 """
             )
 
@@ -100,6 +121,18 @@ class InvestigationStore:
                 """SELECT payload FROM enrichment_cache
                    WHERE ioc_type = ? AND ioc_value = ? AND provider_scope = ? AND expires_at > ?""",
                 (ioc.ioc_type.value, ioc.value, provider_scope, now),
+            ).fetchone()
+        return EnrichmentResult.from_dict(json.loads(row["payload"])) if row else None
+
+    def get_cached_any_scope(self, ioc: IOC, now: int) -> Optional[EnrichmentResult]:
+        """Return the freshest valid scoped result for an offline lookup."""
+        with self._connect() as conn:
+            row = conn.execute(
+                """SELECT payload FROM enrichment_cache
+                   WHERE ioc_type = ? AND ioc_value = ? AND provider_scope != 'legacy-unscoped'
+                     AND expires_at > ?
+                   ORDER BY expires_at DESC LIMIT 1""",
+                (ioc.ioc_type.value, ioc.value, now),
             ).fetchone()
         return EnrichmentResult.from_dict(json.loads(row["payload"])) if row else None
 
@@ -191,3 +224,142 @@ class InvestigationStore:
                 (investigation_id, created_at, len(result_list), payload),
             )
         return investigation_id
+
+    # ------------------------------------------------------------------
+    # Local IOC watchlist and change timeline
+    # ------------------------------------------------------------------
+
+    def add_watchlist_iocs(self, iocs: Iterable[IOC], expires_at: Optional[int] = None) -> int:
+        if expires_at is not None and (isinstance(expires_at, bool) or not isinstance(expires_at, int) or expires_at < 0):
+            raise ValueError("watchlist expiry must be a non-negative Unix timestamp")
+        added_at = datetime.now(timezone.utc).isoformat()
+        rows = []
+        for index, ioc in enumerate(iocs):
+            if index >= MAX_WATCHLIST_ENTRIES:
+                raise ValueError("watchlist entry limit exceeded")
+            rows.append(
+                (
+                    ioc.ioc_type.value,
+                    validate_ioc(ioc.value, ioc.ioc_type, allow_private=True),
+                    added_at,
+                    expires_at,
+                )
+            )
+        with self._connect() as conn:
+            existing = conn.execute("SELECT COUNT(*) FROM watchlist").fetchone()[0]
+            new_keys = {(ioc_type, ioc_value) for ioc_type, ioc_value, _, _ in rows}
+            already_present = sum(
+                conn.execute(
+                    "SELECT 1 FROM watchlist WHERE ioc_type = ? AND ioc_value = ?",
+                    key,
+                ).fetchone() is not None
+                for key in new_keys
+            )
+            if existing + len(new_keys) - already_present > MAX_WATCHLIST_ENTRIES:
+                raise ValueError("watchlist entry limit exceeded")
+            conn.executemany(
+                """INSERT INTO watchlist (ioc_type, ioc_value, added_at, expires_at)
+                   VALUES (?, ?, ?, ?)
+                   ON CONFLICT(ioc_type, ioc_value) DO UPDATE SET
+                     added_at = excluded.added_at,
+                     expires_at = excluded.expires_at""",
+                rows,
+            )
+        return len(rows)
+
+    def list_watchlist(self, now: Optional[int] = None) -> list[dict]:
+        now = int(datetime.now(timezone.utc).timestamp()) if now is None else now
+        with self._connect() as conn:
+            rows = conn.execute(
+                """SELECT ioc_type, ioc_value, added_at, expires_at
+                   FROM watchlist WHERE expires_at IS NULL OR expires_at > ?
+                   ORDER BY ioc_type, ioc_value""",
+                (now,),
+            ).fetchall()
+        return [dict(row) for row in rows]
+
+    def remove_watchlist_iocs(self, iocs: Iterable[IOC]) -> int:
+        keys = [
+            (ioc.ioc_type.value, validate_ioc(ioc.value, ioc.ioc_type, allow_private=True))
+            for ioc in iocs
+        ]
+        removed = 0
+        with self._connect() as conn:
+            for ioc_type, ioc_value in keys:
+                cursor = conn.execute(
+                    "DELETE FROM watchlist WHERE ioc_type = ? AND ioc_value = ?",
+                    (ioc_type, ioc_value),
+                )
+                removed += cursor.rowcount
+        return removed
+
+    @staticmethod
+    def _watchlist_snapshot(result: EnrichmentResult) -> dict:
+        return {
+            "verdict": result.verdict,
+            "confidence_score": result.confidence_score,
+            "sources": sorted(result.sources),
+            "abuse_score": result.abuse_score if result.ioc.ioc_type.value == "IP" else None,
+            "malicious_votes": result.malicious_votes,
+            "suspicious_votes": result.suspicious_votes,
+            "positives": result.positives if result.ioc.ioc_type.value == "Hash" else None,
+            "total_scanners": result.total_scanners if result.ioc.ioc_type.value == "Hash" else None,
+            "cvss_score": result.cvss_score,
+            "epss_score": result.epss_score,
+            "cisa_kev": result.cisa_kev,
+        }
+
+    def record_watchlist_observation(
+        self, result: EnrichmentResult, *, persist: bool = True
+    ) -> Optional[dict]:
+        validate_ioc(result.ioc.value, result.ioc.ioc_type, allow_private=True)
+        now = datetime.now(timezone.utc)
+        snapshot = self._watchlist_snapshot(result)
+        with self._connect() as conn:
+            active = conn.execute(
+                """SELECT 1 FROM watchlist WHERE ioc_type = ? AND ioc_value = ?
+                   AND (expires_at IS NULL OR expires_at > ?)""",
+                (result.ioc.ioc_type.value, result.ioc.value, int(now.timestamp())),
+            ).fetchone()
+            if active is None:
+                return None
+
+            previous_row = conn.execute(
+                """SELECT snapshot FROM watchlist_observations
+                   WHERE ioc_type = ? AND ioc_value = ? ORDER BY id DESC LIMIT 1""",
+                (result.ioc.ioc_type.value, result.ioc.value),
+            ).fetchone()
+            previous = json.loads(previous_row["snapshot"]) if previous_row else None
+            if previous is None:
+                changed_fields = ["baseline"]
+            else:
+                changed_fields = [
+                    key for key, value in snapshot.items()
+                    if previous.get(key) != value
+                ]
+
+            if persist:
+                observation_count = conn.execute(
+                    "SELECT COUNT(*) FROM watchlist_observations"
+                ).fetchone()[0]
+                if observation_count >= MAX_WATCHLIST_OBSERVATIONS:
+                    raise ValueError("watchlist observation limit reached; export or archive the local database")
+                conn.execute(
+                    """INSERT INTO watchlist_observations
+                       (ioc_type, ioc_value, observed_at, snapshot, changed_fields)
+                       VALUES (?, ?, ?, ?, ?)""",
+                    (
+                        result.ioc.ioc_type.value,
+                        result.ioc.value,
+                        now.isoformat(),
+                        json.dumps(snapshot, sort_keys=True),
+                        json.dumps(changed_fields),
+                    ),
+                )
+
+        return {
+            "ioc": result.ioc,
+            "observed_at": now.isoformat(),
+            "changed_fields": changed_fields,
+            "is_baseline": previous is None,
+        }
