@@ -73,6 +73,29 @@ class TestEvidencePackBuilder:
         assert "SHOULD-NOT-APPEAR" not in content
         assert "REDACTED" in content
 
+    def test_configured_secrets_and_url_tokens_are_removed(self, tmp_path):
+        secret = "configured-secret-value"
+        result = EnrichmentResult(
+            ioc=IOC("https://example.com/?access_token=url-secret", IOCType.URL),
+            isp=secret,
+        )
+        builder = EvidencePackBuilder(output_dir=str(tmp_path))
+        zip_path = builder.build("inv-safe", [result], secrets=(secret,))
+        with ZipFile(zip_path) as archive:
+            content = archive.read("investigation.json").decode("utf-8")
+        assert secret not in content
+        assert "url-secret" not in content
+        assert "access_token" not in content
+
+    def test_unsafe_investigation_identifier_rejected(self, tmp_path):
+        builder = EvidencePackBuilder(output_dir=str(tmp_path))
+        try:
+            builder.build("../outside", _results())
+        except ValueError as exc:
+            assert "identifier" in str(exc)
+        else:
+            raise AssertionError("unsafe archive identifier was accepted")
+
     def test_output_dir_created_if_missing(self, tmp_path):
         target = tmp_path / "nested" / "evidence"
         builder = EvidencePackBuilder(output_dir=str(target))

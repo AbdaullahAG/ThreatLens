@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import datetime
 from pathlib import Path
-from typing import List
+from typing import Iterable, List
 
 from openpyxl import Workbook
 from openpyxl.styles import (
@@ -15,7 +15,7 @@ from openpyxl.styles import (
 from openpyxl.utils import get_column_letter
 
 from src.models import EnrichmentResult, IOCType
-from src.utils.security import spreadsheet_value
+from src.utils.security import sanitize_result_for_output, spreadsheet_value
 
 
 # ── Color palette ───────────────────────────────────────────────────────────
@@ -72,7 +72,10 @@ class ExcelReporter:
         self,
         results: List[EnrichmentResult],
         output_dir: str = "output",
+        secrets: Iterable[str] = (),
     ) -> str:
+        secret_values = tuple(secrets)
+        results = [sanitize_result_for_output(result, secret_values) for result in results]
         wb = Workbook()
         wb.remove(wb.active)  # Remove default sheet
 

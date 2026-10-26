@@ -15,25 +15,27 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterable, Optional
 from zipfile import ZIP_DEFLATED, ZipFile
 
 from src.models import EnrichmentResult
-from src.utils.security import redact_secrets
+from src.utils.security import sanitize_sensitive_data
 
 TOOL_VERSION = "2.2.0"
+_INVESTIGATION_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 
 
-def _sanitize(value: Any) -> Any:
+def _sanitize(value: Any, secrets: Iterable[str] = ()) -> Any:
     """Recursively redact anything that looks like a credential before export."""
     if isinstance(value, str):
-        return redact_secrets(value)
+        return sanitize_sensitive_data(value, secrets)
     if isinstance(value, dict):
-        return {key: _sanitize(val) for key, val in value.items()}
+        return {key: _sanitize(val, secrets) for key, val in value.items()}
     if isinstance(value, list):
-        return [_sanitize(item) for item in value]
+        return [_sanitize(item, secrets) for item in value]
     return value
 
 
@@ -47,7 +49,11 @@ class EvidencePackBuilder:
         results: Iterable[EnrichmentResult],
         decision_cards: Optional[Iterable[Any]] = None,
         matched_assets: Optional[Any] = None,
+        secrets: Iterable[str] = (),
     ) -> str:
+        if not isinstance(investigation_id, str) or not _INVESTIGATION_ID_RE.fullmatch(investigation_id):
+            raise ValueError("Investigation identifier is invalid")
+        secret_values = tuple(secrets)
         self.output_dir.mkdir(parents=True, exist_ok=True)
         timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
         zip_path = self.output_dir / f"EvidencePack_{investigation_id}_{timestamp}.zip"
@@ -59,7 +65,7 @@ class EvidencePackBuilder:
                 "investigation_id": investigation_id,
                 "generated_at": datetime.now(timezone.utc).isoformat(),
                 "results": [r.to_dict() for r in results],
-            }
+            }, secret_values
         )
         files["investigation.json"] = json.dumps(investigation_payload, indent=2, default=str).encode("utf-8")
 
@@ -68,11 +74,11 @@ class EvidencePackBuilder:
                 card.to_dict() if hasattr(card, "to_dict") else card for card in decision_cards
             ]
             files["decision_cards.json"] = json.dumps(
-                _sanitize(serialized_cards), indent=2, default=str
+                _sanitize(serialized_cards, secret_values), indent=2, default=str
             ).encode("utf-8")
 
         if matched_assets:
-            files["assets.json"] = json.dumps(_sanitize(matched_assets), indent=2, default=str).encode("utf-8")
+            files["assets.json"] = json.dumps(_sanitize(matched_assets, secret_values), indent=2, default=str).encode("utf-8")
 
         manifest = {
             "tool": "ThreatLens",

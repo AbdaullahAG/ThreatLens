@@ -7,11 +7,12 @@ from __future__ import annotations
 import json
 import csv
 import datetime
+from datetime import timezone
 from pathlib import Path
-from typing import List
+from typing import Iterable, List
 
 from src.models import EnrichmentResult
-from src.utils.security import spreadsheet_value
+from src.utils.security import sanitize_result_for_output, spreadsheet_value
 
 
 class JSONReporter:
@@ -20,7 +21,10 @@ class JSONReporter:
         self,
         results: List[EnrichmentResult],
         output_dir: str = "output",
+        secrets: Iterable[str] = (),
     ) -> str:
+        secret_values = tuple(secrets)
+        results = [sanitize_result_for_output(result, secret_values) for result in results]
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = str(Path(output_dir) / f"ThreatLens_Report_{ts}.json")
@@ -29,7 +33,7 @@ class JSONReporter:
             "meta": {
                 "tool": "ThreatLens",
                 "version": "2.2.0",
-                "generated_at": datetime.datetime.utcnow().isoformat() + "Z",
+                "generated_at": datetime.datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
                 "total_iocs": len(results),
             },
             "results": [self._serialize(r) for r in results],
@@ -98,7 +102,10 @@ class CSVReporter:
         self,
         results: List[EnrichmentResult],
         output_dir: str = "output",
+        secrets: Iterable[str] = (),
     ) -> str:
+        secret_values = tuple(secrets)
+        results = [sanitize_result_for_output(result, secret_values) for result in results]
         Path(output_dir).mkdir(parents=True, exist_ok=True)
         ts = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
         filepath = str(Path(output_dir) / f"ThreatLens_Report_{ts}.csv")

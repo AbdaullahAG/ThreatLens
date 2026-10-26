@@ -23,7 +23,7 @@ from openpyxl import load_workbook
 
 from src.models import IOC, IOCType, EnrichmentResult
 from src.reporters.excel_reporter import ExcelReporter
-from src.reporters.other_reporters import CSVReporter
+from src.reporters.other_reporters import CSVReporter, JSONReporter
 from src.storage import InvestigationStore
 
 
@@ -138,6 +138,25 @@ class TestCSVFormulaProtection:
                 assert not row["abuse_score"].startswith("'"), (
                     "Numeric zero was incorrectly apostrophe-prefixed"
                 )
+
+
+def test_all_report_formats_redact_configured_secrets_and_url_tokens(tmp_path: Path):
+    secret = "key-value-that-must-not-be-exported"
+    result = EnrichmentResult(
+        ioc=IOC("https://example.com/check?access_token=private-token", IOCType.URL),
+        isp=secret,
+        errors={"provider": secret},
+    )
+    paths = [
+        JSONReporter().generate([result], output_dir=str(tmp_path), secrets=(secret,)),
+        CSVReporter().generate([result], output_dir=str(tmp_path), secrets=(secret,)),
+        ExcelReporter().generate([result], output_dir=str(tmp_path), secrets=(secret,)),
+    ]
+    for path in paths:
+        content = Path(path).read_bytes()
+        assert secret.encode() not in content
+        assert b"private-token" not in content
+        assert b"access_token" not in content
 
 
 # ── SQLite cache round-trip integration ───────────────────────────────────────
