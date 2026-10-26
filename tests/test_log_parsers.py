@@ -7,7 +7,7 @@ import json
 import pytest
 
 from src.models import IOCType
-from src.parsers.common import LogFileTooLargeError
+from src.parsers.common import LogFileTooLargeError, MAX_LOG_LINE_CHARS
 from src.parsers.jsonl import JSONLParser
 from src.parsers.suricata import SuricataParser
 from src.parsers.sysmon import SysmonParser
@@ -89,6 +89,13 @@ class TestZeekParser:
         path = _write(tmp_path, "conn.log", content)
         with pytest.raises(LogFileTooLargeError):
             ZeekParser(max_file_bytes=20).parse_file(path)
+
+    def test_oversized_single_line_rejected(self, tmp_path):
+        path = tmp_path / "large.log"
+        # A trailing newline must not make an over-limit line pass validation.
+        path.write_text("x" * (MAX_LOG_LINE_CHARS + 10) + "\n", encoding="utf-8")
+        with pytest.raises(LogFileTooLargeError, match="line"):
+            ZeekParser().parse_file(str(path))
 
 
 # ── Suricata ──────────────────────────────────────────────────────────────

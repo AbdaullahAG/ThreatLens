@@ -23,6 +23,9 @@ from __future__ import annotations
 
 import csv
 import ipaddress
+import os
+import re
+import stat
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Iterable
@@ -41,6 +44,12 @@ _PRODUCT_ALIASES = {"product", "software", "application"}
 _VALID_CRITICALITY = {"critical", "high", "medium", "low"}
 _TRUE_VALUES = {"true", "yes", "y", "1", "internet", "public", "external"}
 _FALSE_VALUES = {"false", "no", "n", "0", "internal", "private"}
+_HOST_LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+_ALLOWED_HEADERS = (
+    _HOSTNAME_ALIASES | _IP_ALIASES | _CRITICALITY_ALIASES
+    | _INTERNET_FACING_ALIASES | _OWNER_ALIASES | _PRODUCT_ALIASES
+)
+MAX_CSV_COLUMNS = 32
 
 
 class AssetImportError(ValueError):
@@ -61,20 +70,31 @@ class AssetImporter:
         self.max_rows = max_rows
 
     def import_file(self, path: str) -> AssetImportResult:
+        """Import a bounded CSV file with allow-listed columns and field values."""
+        if not isinstance(path, str) or not path or len(path) > 4096 or has_control_characters(path):
+            raise AssetImportError("Asset inventory path is invalid")
         file_path = Path(path)
-        if not file_path.is_file():
-            raise AssetImportError(f"Asset inventory file not found: {path}")
-        if file_path.stat().st_size > self.max_file_bytes:
-            raise AssetImportError(
-                f"Asset inventory file exceeds the configured {self.max_file_bytes // (1024 * 1024)} MiB limit"
-            )
-        with file_path.open("r", encoding="utf-8", newline="", errors="replace") as handle:
-            return self._import_rows(handle)
+        if file_path.suffix.lower() != ".csv":
+            raise AssetImportError("Asset inventory must use a .csv file")
+        try:
+            with file_path.open("r", encoding="utf-8", newline="", errors="replace") as handle:
+                file_stat = os.fstat(handle.fileno())
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise AssetImportError("Asset inventory file not found")
+                if file_stat.st_size > self.max_file_bytes:
+                    raise AssetImportError("Asset inventory file exceeds the configured size limit")
+                return self._import_rows(handle)
+        except FileNotFoundError as exc:
+            raise AssetImportError("Asset inventory file not found") from exc
+        except (OSError, csv.Error, UnicodeError) as exc:
+            raise AssetImportError("Asset inventory could not be read safely") from exc
 
     def _import_rows(self, handle: Iterable[str]) -> AssetImportResult:
         reader = csv.DictReader(handle)
         if reader.fieldnames is None:
             raise AssetImportError("CSV file has no header row")
+        if len(reader.fieldnames) > MAX_CSV_COLUMNS:
+            raise AssetImportError("CSV header exceeds the supported column limit")
 
         column_map = self._resolve_columns(reader.fieldnames)
 
@@ -84,10 +104,10 @@ class AssetImporter:
         total_rows = 0
 
         for line_number, row in enumerate(reader, start=2):  # header is line 1
-            total_rows += 1
-            if len(assets) >= self.max_rows:
+            if total_rows >= self.max_rows:
                 truncated = True
-                continue
+                break
+            total_rows += 1
             try:
                 asset = self._row_to_asset(row, column_map)
             except AssetImportError as exc:
@@ -100,12 +120,17 @@ class AssetImporter:
     @staticmethod
     def _resolve_columns(fieldnames: list[str]) -> dict[str, str]:
         """Map logical column names to actual header names, rejecting ambiguity."""
+        if any(not isinstance(name, str) or not name or len(name) > 64 or has_control_characters(name) for name in fieldnames):
+            raise AssetImportError("CSV header contains an invalid column name")
         normalized = [(name, name.strip().lower()) for name in fieldnames if name]
 
         seen_lower = [n for _, n in normalized]
         duplicates = {n for n in seen_lower if seen_lower.count(n) > 1}
         if duplicates:
-            raise AssetImportError(f"Duplicate CSV columns detected: {', '.join(sorted(duplicates))}")
+            raise AssetImportError("Duplicate CSV columns detected")
+        unknown = {name for _original, name in normalized if name not in _ALLOWED_HEADERS}
+        if unknown:
+            raise AssetImportError("CSV contains columns outside the supported header allow-list")
 
         def find(aliases: set[str]) -> str | None:
             matches = [orig for orig, low in normalized if low in aliases]
@@ -139,9 +164,11 @@ class AssetImporter:
         }
 
     @staticmethod
-    def _clean(value: str | None) -> str | None:
+    def _clean(value: str | None, *, max_length: int = 512) -> str | None:
         if value is None:
             return None
+        if not isinstance(value, str) or len(value) > max_length:
+            raise AssetImportError("field is not valid bounded text")
         value = value.strip()
         if not value:
             return None
@@ -149,7 +176,9 @@ class AssetImporter:
             raise AssetImportError("field contains control characters")
         return str(spreadsheet_value(value))
 
-    def _row_to_asset(self, row: dict, column_map: dict[str, str]) -> AssetRecord:
+    def _row_to_asset(self, row: dict[str | None, str | list[str] | None], column_map: dict[str, str | None]) -> AssetRecord:
+        if None in row:
+            raise AssetImportError("row contains more fields than the allow-listed header")
         hostname = self._clean(row.get(column_map["hostname"])) if column_map["hostname"] else None
         raw_ip = self._clean(row.get(column_map["ip"])) if column_map["ip"] else None
 
@@ -161,7 +190,17 @@ class AssetImporter:
             try:
                 ip_address = str(ipaddress.ip_address(candidate))
             except ValueError as exc:
-                raise AssetImportError(f"invalid IP address: {candidate!r}") from exc
+                raise AssetImportError("IP address field is invalid") from exc
+
+        if hostname:
+            hostname_candidate = hostname[1:] if hostname.startswith("'") else hostname
+            labels = hostname_candidate.rstrip(".").split(".")
+            if (
+                len(hostname_candidate) > 253
+                or not labels
+                or any(not _HOST_LABEL_RE.fullmatch(label) for label in labels)
+            ):
+                raise AssetImportError("hostname field is invalid")
 
         if not hostname and not ip_address:
             raise AssetImportError("row has neither a usable hostname nor a valid IP address")
@@ -172,7 +211,7 @@ class AssetImporter:
         criticality = raw_criticality.lstrip("'").lower()
         if criticality not in _VALID_CRITICALITY:
             raise AssetImportError(
-                f"criticality must be one of {sorted(_VALID_CRITICALITY)}, got {raw_criticality!r}"
+                "criticality must be one of the supported values"
             )
 
         internet_facing = False
@@ -185,7 +224,7 @@ class AssetImporter:
                 elif flag in _FALSE_VALUES:
                     internet_facing = False
                 else:
-                    raise AssetImportError(f"internet_facing value not recognised: {raw_flag!r}")
+                    raise AssetImportError("internet_facing field is not a supported boolean value")
 
         owner = self._clean(row.get(column_map["owner"])) if column_map["owner"] else None
         product = self._clean(row.get(column_map["product"])) if column_map["product"] else None

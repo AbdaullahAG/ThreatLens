@@ -23,6 +23,7 @@ from src.parsers.common import IOCCollector, LogParseResult, iter_jsonl_events
 
 _PROCESS_CREATE = "1"
 _NETWORK_CONNECT = "3"
+_ALLOWED_EVENT_FIELDS = {"Hashes", "DestinationIp", "SourceIp", "DestinationHostname"}
 
 
 def _event_data(event: dict) -> dict:
@@ -32,7 +33,10 @@ def _event_data(event: dict) -> dict:
     JSON shape ``{"Event": {"System": {...}, "EventData": {"Data": [...]}}}``.
     """
     if "EventData" in event and isinstance(event["EventData"], dict):
-        return event["EventData"]
+        return {
+            key: value for key, value in event["EventData"].items()
+            if key in _ALLOWED_EVENT_FIELDS and isinstance(value, str) and len(value) <= 4096
+        }
 
     nested = event.get("Event")
     if isinstance(nested, dict):
@@ -41,25 +45,29 @@ def _event_data(event: dict) -> dict:
             data = event_data.get("Data")
             if isinstance(data, list):
                 out = {}
-                for item in data:
-                    if isinstance(item, dict) and "@Name" in item:
-                        out[item["@Name"]] = item.get("#text")
+                for item in data[:128]:
+                    if isinstance(item, dict) and item.get("@Name") in _ALLOWED_EVENT_FIELDS:
+                        value = item.get("#text")
+                        if isinstance(value, str) and len(value) <= 4096:
+                            out[item["@Name"]] = value
                 return out
             if isinstance(data, dict):
-                return data
-    return event
+                return {key: value for key, value in data.items() if key in _ALLOWED_EVENT_FIELDS}
+    return {key: value for key, value in event.items() if key in _ALLOWED_EVENT_FIELDS}
 
 
 def _event_id(event: dict) -> str | None:
     if "EventID" in event:
-        return str(event["EventID"])
+        event_id = event["EventID"]
+        return str(event_id) if event_id in (1, 3, "1", "3") else None
     system = event.get("Event", {}).get("System") if isinstance(event.get("Event"), dict) else None
     if isinstance(system, dict):
         event_id = system.get("EventID")
         if isinstance(event_id, dict):
-            return str(event_id.get("#text", ""))
+            event_id = event_id.get("#text")
+            return str(event_id) if event_id in (1, 3, "1", "3") else None
         if event_id is not None:
-            return str(event_id)
+            return str(event_id) if event_id in (1, 3, "1", "3") else None
     return None
 
 

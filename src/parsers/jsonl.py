@@ -18,17 +18,30 @@ from src.parsers.common import LogParseResult, iter_jsonl_events
 from src.parsers.ioc_parser import IOCParser
 
 
-def _flatten_strings(value: Any, out: list[str], _depth: int = 0) -> None:
-    if _depth > 20:  # bound recursion on pathological/nested input
+def _flatten_strings(
+    value: Any,
+    out: list[str],
+    _depth: int = 0,
+    _budget: list[int] | None = None,
+) -> None:
+    if _budget is None:
+        _budget = [5_000]
+    _budget[0] -= 1
+    if _budget[0] < 0 or _depth > 20 or len(out) >= 1_000:
         return
     if isinstance(value, str):
-        out.append(value)
+        if len(value) <= 4_096:
+            out.append(value)
     elif isinstance(value, dict):
         for v in value.values():
-            _flatten_strings(v, out, _depth + 1)
+            if _budget[0] <= 0 or len(out) >= 1_000:
+                break
+            _flatten_strings(v, out, _depth + 1, _budget)
     elif isinstance(value, list):
         for v in value[:1000]:  # bound very large arrays
-            _flatten_strings(v, out, _depth + 1)
+            if _budget[0] <= 0 or len(out) >= 1_000:
+                break
+            _flatten_strings(v, out, _depth + 1, _budget)
 
 
 class JSONLParser:

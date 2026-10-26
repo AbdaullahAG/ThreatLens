@@ -48,7 +48,8 @@ class ZeekParser:
                     if len(parts) > 1:
                         set_separator = parts[1] or set_separator
                 elif line.startswith("#fields"):
-                    fields = line.split(separator)[1:]
+                    candidate_fields = line.split(separator)[1:]
+                    fields = candidate_fields if 1 <= len(candidate_fields) <= 256 else None
                 continue
 
             if fields is None:

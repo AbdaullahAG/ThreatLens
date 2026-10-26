@@ -17,6 +17,8 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 from pathlib import Path
+import os
+import stat
 from typing import Iterator
 
 from src.models import IOC, IOCType
@@ -35,14 +37,22 @@ class LogFileTooLargeError(ValueError):
     """Raised when a log file exceeds the configured size limit."""
 
 
+MAX_LOG_LINE_CHARS = 1 * 1024 * 1024
+
+
 def check_file_size(path: str, max_file_bytes: int) -> Path:
+    if not isinstance(path, str) or not path or len(path) > 4096 or any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+        raise ValueError("Log file path is invalid")
     file_path = Path(path)
-    if not file_path.is_file():
-        raise FileNotFoundError(f"Log file not found: {path}")
-    if file_path.stat().st_size > max_file_bytes:
-        raise LogFileTooLargeError(
-            f"Log file exceeds the configured {max_file_bytes // (1024 * 1024)} MiB limit"
-        )
+    try:
+        with file_path.open("rb") as handle:
+            file_stat = os.fstat(handle.fileno())
+    except FileNotFoundError:
+        raise FileNotFoundError("Log file not found") from None
+    if not stat.S_ISREG(file_stat.st_mode):
+        raise ValueError("Log input must be a regular file")
+    if file_stat.st_size > max_file_bytes:
+        raise LogFileTooLargeError("Log file exceeds the configured size limit")
     return file_path
 
 
@@ -54,10 +64,21 @@ def iter_text_lines(path: str, max_file_bytes: int, max_lines: int) -> Iterator[
     """
     file_path = check_file_size(path, max_file_bytes)
     with file_path.open("r", encoding="utf-8", errors="replace") as handle:
-        for line_number, line in enumerate(handle, start=1):
+        if not stat.S_ISREG(os.fstat(handle.fileno()).st_mode):
+            raise ValueError("Log input must be a regular file")
+        if os.fstat(handle.fileno()).st_size > max_file_bytes:
+            raise LogFileTooLargeError("Log file exceeds the configured size limit")
+        line_number = 0
+        while True:
+            line = handle.readline(MAX_LOG_LINE_CHARS + 1)
+            if not line:
+                return
+            line_number += 1
             if line_number > max_lines:
                 yield line_number, "", True
                 return
+            if len(line.rstrip("\r\n")) > MAX_LOG_LINE_CHARS:
+                raise LogFileTooLargeError("Log line exceeds the configured per-line limit")
             yield line_number, line.rstrip("\n").rstrip("\r"), False
 
 
@@ -76,7 +97,7 @@ def iter_jsonl_events(path: str, max_file_bytes: int, max_lines: int) -> Iterato
             continue
         try:
             event = json.loads(line)
-        except (ValueError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             yield line_number, None
             continue
         yield line_number, event if isinstance(event, dict) else None

@@ -57,6 +57,11 @@ class TestColumnValidation:
         with pytest.raises(AssetImportError, match="Duplicate"):
             AssetImporter().import_file(path)
 
+    def test_unknown_column_rejected_by_header_allow_list(self, tmp_path):
+        path = _write(tmp_path, "assets.csv", "hostname,criticality,unexpected\nweb01,high,x\n")
+        with pytest.raises(AssetImportError, match="allow-list"):
+            AssetImporter().import_file(path)
+
     def test_empty_file_no_header_rejected(self, tmp_path):
         path = _write(tmp_path, "assets.csv", "")
         with pytest.raises(AssetImportError):
@@ -94,10 +99,21 @@ class TestRowValidation:
 
 class TestSecurityHardening:
     def test_formula_prefixed_cells_are_neutralised(self, tmp_path):
-        csv_text = "hostname,criticality,owner\n=cmd|'/c calc'!A1,high,team\n"
+        csv_text = "hostname,criticality,owner\nweb01,high,=cmd|'/c calc'!A1\n"
         path = _write(tmp_path, "assets.csv", csv_text)
         result = AssetImporter().import_file(path)
-        assert result.assets[0].hostname.startswith("'")
+        assert result.assets[0].owner.startswith("'")
+
+    def test_invalid_hostname_is_rejected(self, tmp_path):
+        path = _write(tmp_path, "assets.csv", "hostname,criticality\n=cmd.example,high\nweb01,low\n")
+        result = AssetImporter().import_file(path)
+        assert len(result.assets) == 1
+        assert result.assets[0].hostname == "web01"
+
+    def test_non_csv_filename_is_rejected(self, tmp_path):
+        path = _write(tmp_path, "assets.txt", "hostname,criticality\nweb01,high\n")
+        with pytest.raises(AssetImportError, match=".csv"):
+            AssetImporter().import_file(path)
 
     def test_oversized_file_rejected(self, tmp_path):
         csv_text = "hostname,criticality\n" + "\n".join(f"h{i},low" for i in range(100))

@@ -99,6 +99,10 @@ class TestIOCParser:
         with pytest.raises(IOCValidationError):
             IOCParser.from_args(ips=["not-an-ip"])
 
+    def test_cli_ioc_input_count_is_bounded(self):
+        result = IOCParser.from_args(ips=["8.8.8.8", "1.1.1.1", "not-an-ip"], max_iocs=2)
+        assert [ioc.value for ioc in result] == ["8.8.8.8", "1.1.1.1"]
+
     def test_rejects_private_cli_ip_by_default(self):
         with pytest.raises(IOCValidationError):
             IOCParser.from_args(ips=["192.168.1.1"])

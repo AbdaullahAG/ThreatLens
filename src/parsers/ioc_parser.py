@@ -6,6 +6,8 @@ from raw text / log files using regular expressions.
 import re
 import ipaddress
 from pathlib import Path
+import os
+import stat
 from typing import NamedTuple
 
 from src.models import IOC, IOCType
@@ -77,20 +79,31 @@ class IOCParser:
 
     def parse_file(self, path: str) -> ParseResult:
         """Read a file and parse its contents."""
+        if not isinstance(path, str) or not path or len(path) > 4096 or any(ord(ch) < 32 or ord(ch) == 127 for ch in path):
+            raise ValueError("Log file path is invalid")
         file_path = Path(path)
-        if not file_path.is_file():
-            raise FileNotFoundError(f"Log file not found: {path}")
-        if file_path.stat().st_size > self.max_file_bytes:
-            raise ValueError(
-                f"Log file exceeds the configured {self.max_file_bytes // (1024 * 1024)} MiB limit"
-            )
-        text = file_path.read_text(encoding="utf-8", errors="replace")
+        try:
+            with file_path.open("rb") as handle:
+                file_stat = os.fstat(handle.fileno())
+                if not stat.S_ISREG(file_stat.st_mode):
+                    raise ValueError("Log input must be a regular file")
+                if file_stat.st_size > self.max_file_bytes:
+                    raise ValueError("Log file exceeds the configured size limit")
+                text = handle.read(self.max_file_bytes + 1).decode("utf-8", errors="replace")
+        except FileNotFoundError:
+            raise FileNotFoundError("Log file not found") from None
+        if len(text.encode("utf-8", errors="replace")) > self.max_file_bytes:
+            raise ValueError("Log file exceeds the configured size limit")
         return self.parse_text(text)
 
     def parse_text(self, text: str) -> ParseResult:
         """Extract all IOCs from a raw text string."""
+        if not isinstance(text, str) or len(text) > self.max_file_bytes:
+            raise ValueError("Log text exceeds the configured size limit")
         iocs: list[IOC] = []
         ignored_ips: list[str] = []
+        ignored_ip_set: set[str] = set()
+        ignored_ip_count = 0
         seen: set[str] = set()
         truncated = False
 
@@ -117,8 +130,10 @@ class IOCParser:
             if _is_public_ip(raw_ip):
                 add(raw_ip, IOCType.IP)
             else:
-                if raw_ip not in ignored_ips:
+                ignored_ip_count += 1
+                if raw_ip not in ignored_ip_set and len(ignored_ips) < self.max_iocs:
                     ignored_ips.append(raw_ip)
+                    ignored_ip_set.add(raw_ip)
 
         # --- Extract Domains (skip those inside already-found URLs) ---
         # Strip URLs from text so we don't double-count
@@ -144,24 +159,48 @@ class IOCParser:
             "url": sum(1 for x in iocs if x.ioc_type == IOCType.URL),
             "hash": sum(1 for x in iocs if x.ioc_type == IOCType.HASH),
             "cve": sum(1 for x in iocs if x.ioc_type == IOCType.CVE),
-            "ignored_private_ips": len(ignored_ips),
+            "ignored_private_ips": ignored_ip_count,
         }
 
         return ParseResult(iocs=iocs, ignored_ips=ignored_ips, stats=stats, truncated=truncated)
 
     @staticmethod
     def from_args(
-        ips=None, domains=None, hashes=None, cves=None, allow_private: bool = False
+        ips: list[str] | None = None,
+        domains: list[str] | None = None,
+        hashes: list[str] | None = None,
+        cves: list[str] | None = None,
+        allow_private: bool = False,
+        max_iocs: int = 10_000,
     ) -> list[IOC]:
         """Build IOC list from explicit CLI arguments."""
+        if isinstance(max_iocs, bool) or not isinstance(max_iocs, int) or max_iocs < 1:
+            raise ValueError("max_iocs must be a positive integer")
         result: list[IOC] = []
-        for ip in (ips or []):
-            result.append(IOC(value=validate_ioc(ip, IOCType.IP, allow_private=allow_private), ioc_type=IOCType.IP))
-        for d in (domains or []):
-            t = IOCType.URL if d.strip().lower().startswith(("http://", "https://")) else IOCType.DOMAIN
-            result.append(IOC(value=validate_ioc(d, t, allow_private=allow_private), ioc_type=t))
-        for h in (hashes or []):
-            result.append(IOC(value=validate_ioc(h, IOCType.HASH), ioc_type=IOCType.HASH))
-        for cve in (cves or []):
-            result.append(IOC(value=validate_ioc(cve, IOCType.CVE), ioc_type=IOCType.CVE))
+        seen: set[str] = set()
+
+        def add_values(values: list[str] | None, ioc_type: IOCType, *, url_aware: bool = False) -> bool:
+            for value in values or []:
+                if len(result) >= max_iocs:
+                    return False
+                if not isinstance(value, str):
+                    raise IOCValidationError("IOC must be a text value")
+                actual_type = ioc_type
+                if url_aware and value.strip().lower().startswith(("http://", "https://")):
+                    actual_type = IOCType.URL
+                canonical = validate_ioc(value, actual_type, allow_private=allow_private)
+                key = f"{actual_type.value}:{canonical.lower()}"
+                if key in seen:
+                    continue
+                seen.add(key)
+                result.append(IOC(value=canonical, ioc_type=actual_type))
+            return True
+
+        if not add_values(ips, IOCType.IP):
+            return result
+        if not add_values(domains, IOCType.DOMAIN, url_aware=True):
+            return result
+        if not add_values(hashes, IOCType.HASH):
+            return result
+        add_values(cves, IOCType.CVE)
         return result
