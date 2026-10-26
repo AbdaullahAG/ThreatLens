@@ -111,25 +111,24 @@ class EnrichmentResult:
             return
 
         if self.ioc.ioc_type == IOCType.IP:
-            score = self.abuse_score
-            # IP reputation is not limited to AbuseIPDB. VirusTotal and OTX
-            # both populate the vote fields for IPs, so do not classify an IP
-            # as clean merely because its AbuseIPDB score is low.
+            signals: list[tuple[int, str]] = []
+            if self.abuse_score >= 75:
+                signals.append((2, f"AbuseIPDB confidence score is {self.abuse_score}%"))
+            elif self.abuse_score >= 25:
+                signals.append((1, f"AbuseIPDB confidence score is {self.abuse_score}%"))
             if self.malicious_votes > 0:
-                self.verdict = "Malicious"
-                self.explanation.append(f"{self.malicious_votes} malicious source signal(s) were returned.")
+                signals.append((2, f"{self.malicious_votes} malicious provider signal(s)"))
             elif self.suspicious_votes > 0:
-                self.verdict = "Suspicious"
-                self.explanation.append(f"{self.suspicious_votes} suspicious source signal(s) were returned.")
-            elif score >= 75:
-                self.verdict = "Malicious"
-                self.explanation.append(f"AbuseIPDB confidence score is {score}%.")
-            elif score >= 25:
-                self.verdict = "Suspicious"
-                self.explanation.append(f"AbuseIPDB confidence score is {score}%.")
-            else:
-                self.verdict = "Clean"
-                self.explanation.append("Successful sources returned no elevated IP reputation signal.")
+                signals.append((1, f"{self.suspicious_votes} suspicious provider signal(s)"))
+
+            highest_signal = max((severity for severity, _detail in signals), default=0)
+            self.verdict = {0: "Clean", 1: "Suspicious", 2: "Malicious"}[highest_signal]
+            details = [detail for severity, detail in signals if severity == highest_signal]
+            self.explanation.append(
+                "; ".join(details)
+                if details
+                else "Successful sources returned no elevated IP reputation signal."
+            )
         elif self.ioc.ioc_type in (IOCType.DOMAIN, IOCType.URL):
             if self.malicious_votes > 0:
                 self.verdict = "Malicious"

@@ -155,20 +155,19 @@ class TestEnrichmentResult:
         r.set_verdict()
         assert r.verdict == "Clean"
 
-    def test_ip_malicious_votes_override_low_abuse_score(self):
-        """VT/OTX evidence must not be masked by a low AbuseIPDB score."""
-        r = self._make(IOCType.IP)
-        r.abuse_score = 7
-        r.malicious_votes = 17
-        r.set_verdict()
-        assert r.verdict == "Malicious"
-
-    def test_ip_suspicious_votes_override_low_abuse_score(self):
-        r = self._make(IOCType.IP)
-        r.abuse_score = 0
-        r.suspicious_votes = 1
-        r.set_verdict()
-        assert r.verdict == "Suspicious"
+    @pytest.mark.parametrize(
+        ("abuse_score", "malicious_votes", "suspicious_votes", "expected"),
+        [(7, 17, 0, "Malicious"), (0, 0, 1, "Suspicious")],
+    )
+    def test_ip_verdict_aggregates_provider_signals(
+        self, abuse_score: int, malicious_votes: int, suspicious_votes: int, expected: str
+    ):
+        result = self._make(IOCType.IP)
+        result.abuse_score = abuse_score
+        result.malicious_votes = malicious_votes
+        result.suspicious_votes = suspicious_votes
+        result.set_verdict()
+        assert result.verdict == expected
 
     def test_domain_malicious(self):
         r = self._make(IOCType.DOMAIN)

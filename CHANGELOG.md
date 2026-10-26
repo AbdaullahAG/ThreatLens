@@ -10,6 +10,7 @@ All notable changes to ThreatLens are documented here.
 - Local SQLite IOC watchlist with expiry, add/list/remove/scan commands, and stored snapshots that report changes in verdict and key risk signals.
 
 ### Changed
+- The current release and future distributions are licensed under Apache-2.0.
 - `--no-cache` now bypasses both per-IOC enrichment results and provider feed caches. Investigation history remains independent; use `--no-history` to skip recording the current run.
 - Enrichment cache entries are scoped to the effective provider set for each IOC. Existing unscoped entries are migrated as `legacy-unscoped` and are not reused.
 - Evidence packs include only assets matched to the included CVE decision cards, and omit inventory database bookkeeping fields.

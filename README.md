@@ -5,8 +5,8 @@
 
 [![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
-[![License: PolyForm Noncommercial](https://img.shields.io/badge/license-PolyForm%20Noncommercial-lightgrey.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-155%20passed-brightgreen.svg)](tests/)
+[![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
+[![Tests](https://img.shields.io/badge/tests-185%20passed-brightgreen.svg)](tests/)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF.svg)](.github/workflows/security.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
 [![Maintained](https://img.shields.io/badge/maintained-yes-success.svg)](#)
@@ -525,9 +525,7 @@ New enrichers, bug fixes, documentation improvements, and test coverage are all 
 
 ## 📄 License
 
-This project is licensed under the **[PolyForm Noncommercial License 1.0.0](LICENSE)**.
-
-You're free to use, study, modify, and share this code for personal, educational, or research purposes. **Commercial use is not permitted** without prior written permission from the author (`Abd.moh9999@yahoo.com`).
+This project is licensed under the **[Apache License 2.0](LICENSE)**. You may use, modify, and distribute the project, including for commercial purposes, subject to the license terms and preservation of required notices.
 
 ---
 
