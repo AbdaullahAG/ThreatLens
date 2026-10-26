@@ -25,15 +25,45 @@ class InvestigationStore:
 
     def _initialize(self) -> None:
         with self._connect() as conn:
+            cache_columns = {
+                row["name"]
+                for row in conn.execute("PRAGMA table_info(enrichment_cache)").fetchall()
+            }
+            if not cache_columns:
+                conn.execute(
+                    """CREATE TABLE enrichment_cache (
+                        ioc_type TEXT NOT NULL,
+                        ioc_value TEXT NOT NULL,
+                        provider_scope TEXT NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        payload TEXT NOT NULL,
+                        PRIMARY KEY (ioc_type, ioc_value, provider_scope)
+                    )"""
+                )
+            elif "provider_scope" not in cache_columns:
+                # Preserve old entries for forensic/manual inspection, but mark
+                # them unscoped so they cannot satisfy a scoped cache lookup.
+                conn.execute("ALTER TABLE enrichment_cache RENAME TO enrichment_cache_legacy")
+                conn.execute(
+                    """CREATE TABLE enrichment_cache (
+                        ioc_type TEXT NOT NULL,
+                        ioc_value TEXT NOT NULL,
+                        provider_scope TEXT NOT NULL,
+                        expires_at INTEGER NOT NULL,
+                        payload TEXT NOT NULL,
+                        PRIMARY KEY (ioc_type, ioc_value, provider_scope)
+                    )"""
+                )
+                conn.execute(
+                    """INSERT INTO enrichment_cache
+                       (ioc_type, ioc_value, provider_scope, expires_at, payload)
+                       SELECT ioc_type, ioc_value, 'legacy-unscoped', expires_at, payload
+                       FROM enrichment_cache_legacy"""
+                )
+                conn.execute("DROP TABLE enrichment_cache_legacy")
+
             conn.executescript(
                 """
-                CREATE TABLE IF NOT EXISTS enrichment_cache (
-                    ioc_type TEXT NOT NULL,
-                    ioc_value TEXT NOT NULL,
-                    expires_at INTEGER NOT NULL,
-                    payload TEXT NOT NULL,
-                    PRIMARY KEY (ioc_type, ioc_value)
-                );
                 CREATE TABLE IF NOT EXISTS investigations (
                     id TEXT PRIMARY KEY,
                     created_at TEXT NOT NULL,
@@ -62,23 +92,32 @@ class InvestigationStore:
                 """
             )
 
-    def get_cached(self, ioc: IOC, now: int) -> Optional[EnrichmentResult]:
+    def get_cached(
+        self, ioc: IOC, now: int, provider_scope: str = "all"
+    ) -> Optional[EnrichmentResult]:
         with self._connect() as conn:
             row = conn.execute(
-                "SELECT payload FROM enrichment_cache WHERE ioc_type = ? AND ioc_value = ? AND expires_at > ?",
-                (ioc.ioc_type.value, ioc.value, now),
+                """SELECT payload FROM enrichment_cache
+                   WHERE ioc_type = ? AND ioc_value = ? AND provider_scope = ? AND expires_at > ?""",
+                (ioc.ioc_type.value, ioc.value, provider_scope, now),
             ).fetchone()
         return EnrichmentResult.from_dict(json.loads(row["payload"])) if row else None
 
-    def cache_result(self, result: EnrichmentResult, expires_at: int) -> None:
+    def cache_result(
+        self,
+        result: EnrichmentResult,
+        expires_at: int,
+        provider_scope: str = "all",
+    ) -> None:
         payload = json.dumps(result.to_dict(), sort_keys=True, default=str)
         with self._connect() as conn:
             conn.execute(
-                """INSERT INTO enrichment_cache (ioc_type, ioc_value, expires_at, payload)
-                   VALUES (?, ?, ?, ?)
-                   ON CONFLICT(ioc_type, ioc_value) DO UPDATE SET
+                """INSERT INTO enrichment_cache
+                   (ioc_type, ioc_value, provider_scope, expires_at, payload)
+                   VALUES (?, ?, ?, ?, ?)
+                   ON CONFLICT(ioc_type, ioc_value, provider_scope) DO UPDATE SET
                      expires_at = excluded.expires_at, payload = excluded.payload""",
-                (result.ioc.ioc_type.value, result.ioc.value, expires_at, payload),
+                (result.ioc.ioc_type.value, result.ioc.value, provider_scope, expires_at, payload),
             )
 
     # ------------------------------------------------------------------

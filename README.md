@@ -222,7 +222,7 @@ python main.py -i 45.33.32.156 --evidence-pack
 | `--apis` | Restrict enrichment to a specific set of APIs (now includes `cisa_kev`, `epss`) |
 | `--format` | Output format: `excel` (default) \| `json` \| `csv` \| `all` |
 | `--output` | Directory to save reports (default: `./output`) |
-| `--no-report` | Print results to terminal only, skip saving a file |
+| `--no-report` | Print results to terminal only; investigation history may still be stored |
 | `--import-assets` | Import an asset inventory CSV (hostname/ip, criticality, internet_facing, owner, product) |
 | `--decision-cards` | Produce a Patch/Isolate/Monitor/Not-affected card for every CVE result |
 | `--export` | Send results to one or more SIEM destinations: `splunk` \| `elastic` \| `sentinel` (opt-in, must be configured in `config/keys.env`) |
@@ -230,7 +230,8 @@ python main.py -i 45.33.32.156 --evidence-pack
 | `--evidence-pack` | Package the investigation into a SHA-256-manifested ZIP |
 | `--cache-path` | SQLite path for local cache (default: `.threatlens/investigations.db`) |
 | `--cache-ttl` | Cache lifetime in seconds (default: 3600) |
-| `--no-cache` | Bypass the local cache entirely |
+| `--no-cache` | Bypass IOC-result and provider-feed caches; history and asset inventory are unaffected |
+| `--no-history` | Do not save this run to local investigation history |
 | `--max-requests` | Cap on external API calls per run (default: 250) |
 | `--max-iocs` | Maximum unique IOCs per run (default: 1000) |
 | `--allow-private-iocs` | Allow private/loopback IPs (disabled by default) |

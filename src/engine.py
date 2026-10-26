@@ -8,6 +8,7 @@ from __future__ import annotations
 import argparse
 import logging
 import time
+import uuid
 from typing import List
 
 from rich.console import Console
@@ -61,7 +62,9 @@ class ThreatLensEngine:
                 self.config,
                 selected_apis=self.args.apis,
                 request_budget=self.request_budget,
-                store=self.store,
+                # --no-cache bypasses both per-IOC results and provider feed
+                # caches, while leaving investigation history independent.
+                store=None if self.args.no_cache else self.store,
             )
             if not enrichers:
                 console.print(
@@ -80,8 +83,12 @@ class ThreatLensEngine:
             if results:
                 display_results(results)
 
-            investigation_id = self.store.record_investigation(results)
-            console.print(f"[dim]Investigation recorded locally: {investigation_id}[/]")
+            if getattr(self.args, "no_history", False):
+                investigation_id = str(uuid.uuid4())
+                console.print("[dim]Investigation history storage disabled for this run.[/]")
+            else:
+                investigation_id = self.store.record_investigation(results)
+                console.print(f"[dim]Investigation recorded locally: {investigation_id}[/]")
 
             # 5. CVE Decision Cards (optional)
             decision_cards = self._build_decision_cards(results) if getattr(self.args, 'decision_cards', False) else []
@@ -172,10 +179,40 @@ class ThreatLensEngine:
 
     def _build_evidence_pack(self, investigation_id: str, results: List[EnrichmentResult], decision_cards: list) -> None:
         from src.evidence.pack import EvidencePackBuilder
+        from src.decision.asset_correlation import correlate
+        from src.models import IOCType
 
-        assets = self.store.list_assets() if decision_cards else None
+        assets = []
+        if decision_cards:
+            card_cves = {card.cve_id for card in decision_cards}
+            inventory = self.store.list_assets()
+            seen_assets: set[tuple] = set()
+            for result in results:
+                if result.ioc.ioc_type != IOCType.CVE or result.ioc.value not in card_cves:
+                    continue
+                for asset in correlate(result, inventory).matched_assets:
+                    # Exclude database bookkeeping and inventory file paths
+                    # from the portable evidence artifact.
+                    evidence_asset = {
+                        key: asset.get(key)
+                        for key in (
+                            "hostname", "ip_address", "criticality",
+                            "internet_facing", "owner", "product",
+                        )
+                    }
+                    identity = (
+                        asset.get("id"),
+                        evidence_asset["hostname"],
+                        evidence_asset["ip_address"],
+                    )
+                    if identity not in seen_assets:
+                        seen_assets.add(identity)
+                        assets.append(evidence_asset)
         path = EvidencePackBuilder(output_dir=self.args.output).build(
-            investigation_id, results, decision_cards=decision_cards or None, matched_assets=assets
+            investigation_id,
+            results,
+            decision_cards=decision_cards or None,
+            matched_assets=assets or None,
         )
         console.print(f"[green]✓ Evidence pack saved:[/] [bold]{path}[/]")
 
@@ -314,14 +351,25 @@ class ThreatLensEngine:
                     task,
                     description=f"[cyan]Enriching [bold]{ioc.ioc_type.value}[/]: {ioc.value[:40]}",
                 )
-                result = None if self.args.no_cache else self.store.get_cached(ioc, int(time.time()))
+                provider_scope = "v1:" + ",".join(
+                    sorted(e.name for e in enrichers if ioc.ioc_type in e.supports)
+                )
+                result = (
+                    None
+                    if self.args.no_cache
+                    else self.store.get_cached(ioc, int(time.time()), provider_scope)
+                )
                 if result:
                     result.cached = True
                     result.explanation.append("Returned from the local cache.")
                 else:
                     result = enrich_ioc(ioc, enrichers)
                     if not self.args.no_cache and self.args.cache_ttl:
-                        self.store.cache_result(result, int(time.time()) + self.args.cache_ttl)
+                        self.store.cache_result(
+                            result,
+                            int(time.time()) + self.args.cache_ttl,
+                            provider_scope,
+                        )
                 results.append(result)
                 progress.advance(task)
 

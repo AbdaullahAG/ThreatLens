@@ -2,6 +2,16 @@
 
 All notable changes to ThreatLens are documented here.
 
+## Unreleased
+
+### Changed
+- `--no-cache` now bypasses both per-IOC enrichment results and provider feed caches. Investigation history remains independent; use `--no-history` to skip recording the current run.
+- Enrichment cache entries are scoped to the effective provider set for each IOC. Existing unscoped entries are migrated as `legacy-unscoped` and are not reused.
+- Evidence packs include only assets matched to the included CVE decision cards, and omit inventory database bookkeeping fields.
+
+### Added
+- `--no-history` CLI option for runs that must not create an investigation-history record.
+
 ## [2.2.0] — Vulnerability & SOC Triage
 
 ### Added

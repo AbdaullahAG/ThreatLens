@@ -115,7 +115,7 @@ Examples:
     out_group.add_argument(
         "--no-report",
         action="store_true",
-        help="Print results to terminal only, do not save a file",
+        help="Print results to terminal only; investigation history may still be stored",
     )
 
     # --- API Selection ---
@@ -205,7 +205,12 @@ Examples:
     misc_group.add_argument(
         "--no-cache",
         action="store_true",
-        help="Do not read or write the local enrichment cache",
+        help="Bypass IOC and provider-feed caches; does not disable investigation history",
+    )
+    misc_group.add_argument(
+        "--no-history",
+        action="store_true",
+        help="Do not save this run to the local investigation history",
     )
     misc_group.add_argument(
         "--timeout",
