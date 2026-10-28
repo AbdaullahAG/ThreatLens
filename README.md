@@ -6,7 +6,7 @@
 [![Awesome](https://awesome.re/badge.svg)](https://github.com/jivoi/awesome-osint)
 [![Python](https://img.shields.io/badge/python-3.9%2B-blue.svg)](https://www.python.org/)
 [![License: Apache-2.0](https://img.shields.io/badge/license-Apache--2.0-blue.svg)](LICENSE)
-[![Tests](https://img.shields.io/badge/tests-185%20passed-brightgreen.svg)](tests/)
+[![Tests](https://img.shields.io/badge/tests-192%20passed-brightgreen.svg)](tests/)
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF.svg)](.github/workflows/security.yml)
 [![PRs Welcome](https://img.shields.io/badge/PRs-welcome-brightgreen.svg)](#-contributing)
 [![Maintained](https://img.shields.io/badge/maintained-yes-success.svg)](#)
@@ -76,13 +76,14 @@ Built for SOC analysts, incident responders, threat hunters, and anyone who want
 | 🧾 **Evidence Packs** | ZIP export of an investigation with a SHA-256 manifest for basic chain-of-custody |
 | 📊 **Reports** | Excel (color-coded), JSON, CSV |
 | 💾 **Local Cache** | SQLite cache with configurable TTL — skip re-querying known IOCs, plus a cached CISA KEV feed (24h TTL) |
-| 🔐 **Privacy Controls** | Standard, passive, approved-provider-only, and local-cache-only modes; sensitive URL query parameters are removed before external lookups |
+| 🔐 **Privacy Controls** | Standard, passive, approved-provider-only, and local-only modes; sensitive URL query parameters are removed before external lookups |
 | 👁️ **IOC Watchlist** | Local SQLite watchlist with expiry, manual scans, and change tracking for verdict and risk signals |
+| 🧠 **Investigation Memory** | Search saved IOC observations, compare verdict/source history, find IOCs co-occurring in prior investigations, and manage local retention/export |
 | 🛡️ **Security** | Redirect blocking, host allow-listing, API-key redaction in logs, spreadsheet-formula neutralisation, CSV/log DoS limits |
 | 🔒 **Lockfile** | `requirements.lock` with SHA-256 hashes for reproducible installs |
 | 💻 **CLI Experience** | Rich progress bars, colored tables, and a clean verdict summary |
 | 🧩 **Architecture** | Modular enrichers/parsers/exporters, typed models, strict separation of concerns |
-| ✅ **Tested** | 155 unit & integration tests with `pytest`; CI via GitHub Actions |
+| ✅ **Tested** | 192 unit & integration tests with `pytest`; CI via GitHub Actions |
 | ⚡ **Resilient** | One failing API or SIEM destination never blocks the others — errors are isolated and logged |
 
 ---
@@ -242,6 +243,15 @@ python main.py -i 45.33.32.156 --evidence-pack
 | `--watchlist-remove` | Remove one or more `TYPE:VALUE` entries from the watchlist |
 | `--watchlist-scan` | Scan active watchlist entries and show changes since the previous stored observation |
 | `--watchlist-ttl-days` | Watchlist expiry on add (1-3650 days; default: 90) |
+| `--history-list` | List recent saved observations; combine with history filters |
+| `--history-search QUERY` | Search saved IOC values and provider names |
+| `--history-ioc TYPE:VALUE` | Show one IOC's saved verdict timeline and co-occurring IOCs |
+| `--history-type` / `--history-verdict` / `--history-severity` | Filter local history by IOC type, verdict, or CVE severity |
+| `--history-after` / `--history-before` | Filter local history by inclusive ISO date or timestamp |
+| `--history-limit` | Limit history results to 1-500 observations (default: 50) |
+| `--history-export PATH` | Export matching history as redacted JSON to a new file |
+| `--history-delete ID` | Delete one investigation and its history index by UUID |
+| `--history-prune-days DAYS` | Explicitly delete investigations older than the requested age (1-36500 days) |
 | `--max-requests` | Cap on external API calls per run (default: 250) |
 | `--max-iocs` | Maximum unique IOCs per run (default: 1000) |
 | `--allow-private-iocs` | Allow private/loopback IPs (disabled by default) |
@@ -284,9 +294,37 @@ python main.py --watchlist-remove IP:8.8.8.8
 
 # Use local cached intelligence without contacting providers
 python main.py -i 8.8.8.8 --privacy-mode local-only --no-report
+
+# Search previous investigations and inspect one IOC's timeline
+python main.py --history-search example.com --history-type Domain --history-after 2026-01-01
+python main.py --history-ioc IP:8.8.8.8
 ```
 
 The watchlist stores IOC values and change snapshots in the local database. Protect the database file according to your incident-response data-handling policy.
+
+### Local investigation memory
+
+Every normal investigation is recorded locally unless `--no-history` is used. ThreatLens indexes the saved IOC type/value, verdict, severity, confidence, provider names, and timestamp in SQLite. Existing investigation records are indexed when the database is first opened after this update. When a new scan includes a previously investigated IOC, the terminal shows its latest saved verdict and provider names beside the current result.
+
+```bash
+# List recent observations or filter them
+python main.py --history-list --history-verdict Malicious --history-limit 100
+
+# Search IOC values/provider names with type, severity, and date filters
+python main.py --history-search example --history-type Domain --history-after 2026-01-01 --history-before 2026-12-31
+
+# Show an IOC's timeline and indicators recorded in the same investigations
+python main.py --history-ioc Domain:example.com
+
+# Export matching observations as redacted JSON to a new file
+python main.py --history-export output/history.json --history-type IP
+
+# Remove one investigation by ID, or explicitly prune records older than a retention window
+python main.py --history-delete 00000000-0000-0000-0000-000000000000
+python main.py --history-prune-days 365
+```
+
+History search is local and does not contact providers. IOC “relatedness” means the IOCs appeared in the same saved investigation; it does not assert that they belong to the same campaign. Search/export are capped at 500 observations per operation. Exports redact configured credentials and sensitive URL query parameters, require a new filename, and do not overwrite existing files. Deletion and pruning remove investigation records and their search index entries, but do not clear the enrichment cache, watchlist, or asset inventory.
 
 ## 🏗️ Architecture
 
@@ -356,6 +394,7 @@ threat_intel_tool/
     ├── test_asset_correlation.py       # CVE ↔ asset matching heuristic
     ├── test_log_parsers.py             # Zeek, Suricata, Sysmon, generic JSONL parsers
     ├── test_exporters.py               # Splunk/Elastic/Sentinel exporters — mocked HTTP
+    ├── test_investigation_history.py   # Search, filters, timelines, related IOCs, export, deletion, retention
     ├── test_evidence_pack.py           # Evidence pack ZIP + manifest integrity
     └── test_cli_e2e.py                 # Full CLI run against real NVD API (opt-in, --run-e2e)
 ```
@@ -418,6 +457,7 @@ pytest tests/test_cli_e2e.py --run-e2e -v
 | `test_provider_response_validation.py` | Mocked provider payloads — response field allow-lists, bounded scores, CVE validation, and EPSS batch limits |
 | `test_security_controls.py` | URL/host allow-lists, bounded HTTP bodies, IOC rules, spreadsheet formula safety, and secret redaction |
 | `test_watchlist.py` | Watchlist input validation, expiry, duplicate handling, and storage limits |
+| `test_investigation_history.py` | History search/filtering, legacy indexing, IOC timelines and co-occurrence, redacted export, deletion, and retention |
 | `test_evidence_pack.py` | ZIP contents, SHA-256 manifest integrity, secret redaction in packaged data |
 | `test_cli_e2e.py` | Full subprocess run: `python main.py -c CVE-2021-44228 --apis nvd --format json` → exit 0, valid JSON, correct verdict |
 

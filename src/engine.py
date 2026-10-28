@@ -6,10 +6,12 @@ Ties together: IOC parsing → enrichment → display → reporting.
 from __future__ import annotations
  
 import argparse
+import json
 import logging
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import List
 
 from rich.console import Console
@@ -32,6 +34,7 @@ from src.utils.security import (
     redact_secrets,
     sanitize_ioc_for_external,
     sanitize_result_for_output,
+    sanitize_sensitive_data,
     validate_ioc,
 )
 
@@ -50,6 +53,10 @@ class ThreatLensEngine:
 
     def run(self) -> bool:
         try:
+            history_result = self._run_history_command()
+            if history_result is not None:
+                return history_result
+            self._warn_history_index_limit()
             if getattr(self.args, "watchlist_list", False):
                 self._display_watchlist()
                 return True
@@ -122,6 +129,7 @@ class ThreatLensEngine:
 
             # 3. Enrich with progress bar
             results = self._run_enrichment(iocs, enrichers)
+            self._display_history_comparison(results)
 
             watchlist_changes = self._record_watchlist_observations(
                 results, persist=not getattr(self.args, "no_history", False)
@@ -163,6 +171,139 @@ class ThreatLensEngine:
             console.print("[red]✗ Investigation failed. See the application log for a redacted diagnostic.[/]")
             self.logger.error("Engine error: %s", redact_secrets(e, *self.config.secret_values()))
             return False
+
+    def _run_history_command(self) -> bool | None:
+        """Handle standalone search, timeline, retention, delete, and export actions."""
+        if getattr(self.args, "history_delete", None):
+            removed = self.store.delete_investigation(self.args.history_delete)
+            if removed:
+                console.print("[green]Deleted the selected local investigation.[/]")
+            else:
+                console.print("[yellow]No investigation matched that ID.[/]")
+            return True
+
+        prune_days = getattr(self.args, "history_prune_days", None)
+        if prune_days is not None:
+            if not 1 <= prune_days <= 36_500:
+                console.print("[red]--history-prune-days must be between 1 and 36500.[/]")
+                return False
+            cutoff = datetime.now(timezone.utc) - timedelta(days=prune_days)
+            removed = self.store.prune_investigations(cutoff.isoformat())
+            console.print(f"[green]Pruned {removed} investigation(s) older than {prune_days} day(s).[/]")
+            return True
+
+        raw_ioc = getattr(self.args, "history_ioc", None)
+        if raw_ioc:
+            self._warn_history_index_limit()
+            type_name, separator, value = raw_ioc.partition(":")
+            try:
+                ioc_type = IOCType(type_name)
+                if not separator or not value:
+                    raise ValueError("IOC must use TYPE:VALUE format")
+                ioc = IOC(value=value, ioc_type=ioc_type)
+                timeline = self.store.ioc_history(ioc, limit=getattr(self.args, "history_limit", 50))
+                from src.reporters.history import display_history, display_related_iocs
+                display_history(timeline, title=f"Saved timeline: {ioc.ioc_type.value} {ioc.value}")
+                display_related_iocs(self.store.related_iocs(ioc))
+            except ValueError:
+                console.print("[red]Invalid IOC. Use a supported TYPE:VALUE and a valid IOC value.[/]")
+                return False
+            return True
+
+        list_requested = getattr(self.args, "history_list", False)
+        query = getattr(self.args, "history_search", None)
+        export_path = getattr(self.args, "history_export", None)
+        filters_requested = any(
+            getattr(self.args, name, None) is not None
+            for name in ("history_type", "history_verdict", "history_severity", "history_after", "history_before")
+        )
+        if not (list_requested or query or export_path or filters_requested):
+            return None
+
+        self._warn_history_index_limit()
+
+        try:
+            rows = self.store.search_history(
+                query,
+                ioc_type=getattr(self.args, "history_type", None),
+                verdict=getattr(self.args, "history_verdict", None),
+                severity=getattr(self.args, "history_severity", None),
+                since=getattr(self.args, "history_after", None),
+                until=getattr(self.args, "history_before", None),
+                limit=getattr(self.args, "history_limit", 50),
+            )
+        except ValueError as exc:
+            self.logger.warning("History query rejected: %s", redact_secrets(exc, *self.config.secret_values()))
+            console.print("[red]History query rejected. Check the query, filters, date range, and limit.[/]")
+            return False
+
+        if export_path:
+            try:
+                destination = Path(export_path).expanduser()
+                if not destination.parent.is_dir():
+                    raise ValueError("export directory does not exist")
+                export_rows = [
+                    {
+                        "investigation_id": row["investigation_id"],
+                        "created_at": row["created_at"],
+                        "result": sanitize_sensitive_data(row["result"], self.config.secret_values()),
+                    }
+                    for row in rows
+                ]
+                document = {
+                    "tool": "ThreatLens",
+                    "exported_at": datetime.now(timezone.utc).isoformat(),
+                    "count": len(export_rows),
+                    "results": export_rows,
+                }
+                with destination.open("x", encoding="utf-8", newline="\n") as handle:
+                    json.dump(document, handle, indent=2, ensure_ascii=False)
+                    handle.write("\n")
+                console.print(f"[green]Exported {len(rows)} redacted history observation(s) to {destination}.[/]")
+            except (OSError, ValueError) as exc:
+                self.logger.warning("History export rejected: %s", redact_secrets(exc, *self.config.secret_values()))
+                console.print("[red]History export failed. Choose a new filename in an existing directory.[/]")
+                return False
+
+        if list_requested or query:
+            from src.reporters.history import display_history
+            display_history(rows, title="Local Investigation History")
+        return True
+
+    def _warn_history_index_limit(self) -> None:
+        """Tell the operator if legacy history exceeded the one-time index cap."""
+        if self.store.history_index_limited():
+            console.print(
+                "[yellow]⚠ Legacy history indexing reached its safety cap; some oldest records may not be searchable.[/]"
+            )
+
+    def _display_history_comparison(self, results: list[EnrichmentResult]) -> None:
+        """Show prior verdict and source context before saving the current observations."""
+        comparisons: list[tuple[EnrichmentResult, dict]] = []
+        for result in results:
+            previous = self.store.ioc_history(result.ioc, limit=1)
+            if previous:
+                comparisons.append((result, previous[0]))
+        if not comparisons:
+            return
+
+        table = Table(title="Local Investigation Memory: Previous Findings", show_lines=True)
+        table.add_column("IOC", overflow="fold")
+        table.add_column("Previous verdict")
+        table.add_column("Current verdict")
+        table.add_column("Previous sources", overflow="fold")
+        table.add_column("Current sources", overflow="fold")
+        table.add_column("Previous observation (UTC)", no_wrap=True)
+        for current, previous in comparisons:
+            table.add_row(
+                Text(current.ioc.value),
+                Text(str(previous.get("verdict", "Unknown"))),
+                Text(current.verdict),
+                Text(", ".join(previous.get("sources", [])) or "—"),
+                Text(", ".join(sorted(current.sources)) or "—"),
+                Text(str(previous.get("created_at", ""))),
+            )
+        console.print(table)
 
     def _import_assets(self) -> None:
         """Import an asset inventory CSV, replacing any previous import."""

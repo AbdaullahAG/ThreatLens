@@ -176,6 +176,57 @@ Examples:
         help="Expiry applied when adding IOCs to the watchlist (1-3650 days; default: 90)",
     )
 
+    # --- Local Investigation Memory ---
+    history_group = parser.add_argument_group("Local Investigation Memory")
+    history_group.add_argument(
+        "--history-list",
+        action="store_true",
+        help="List recent local IOC observations; combine with history filters",
+    )
+    history_group.add_argument(
+        "--history-search",
+        metavar="QUERY",
+        help="Search saved IOC values and provider names",
+    )
+    history_group.add_argument(
+        "--history-ioc",
+        metavar="TYPE:VALUE",
+        help="Show an IOC's saved verdict timeline and co-occurring IOCs",
+    )
+    history_group.add_argument(
+        "--history-type",
+        choices=["IP", "Domain", "URL", "Hash", "CVE"],
+        help="Filter history by IOC type",
+    )
+    history_group.add_argument(
+        "--history-verdict",
+        choices=["Malicious", "Suspicious", "Clean", "Unknown", "Critical", "High", "Medium", "Low"],
+        help="Filter history by verdict",
+    )
+    history_group.add_argument(
+        "--history-severity",
+        choices=["Critical", "High", "Medium", "Low"],
+        help="Filter CVE history by severity",
+    )
+    history_group.add_argument("--history-after", metavar="ISO_DATE", help="Include observations on/after this UTC date")
+    history_group.add_argument("--history-before", metavar="ISO_DATE", help="Include observations on/before this UTC date")
+    history_group.add_argument(
+        "--history-limit", type=int, default=50,
+        help="Maximum observations to display/export (1-500; default: 50)",
+    )
+    history_group.add_argument(
+        "--history-delete", metavar="INVESTIGATION_ID",
+        help="Delete one saved investigation and its indexed history by UUID",
+    )
+    history_group.add_argument(
+        "--history-prune-days", type=int, metavar="DAYS",
+        help="Delete saved investigations older than this many days (1-36500)",
+    )
+    history_group.add_argument(
+        "--history-export", metavar="PATH",
+        help="Export matching local history as redacted JSON to a new file",
+    )
+
     # --- Vulnerability & SOC Triage (v2.2) ---
     vuln_group = parser.add_argument_group("Vulnerability & SOC Triage")
     vuln_group.add_argument(
@@ -289,12 +340,52 @@ Examples:
 def validate_args(args: argparse.Namespace) -> bool:
     """Ensure at least one IOC source is provided."""
     has_input = any([args.ip, args.domain, args.hash, args.cve, args.file])
+    history_actions = [
+        bool(getattr(args, "history_list", False)),
+        bool(getattr(args, "history_search", None)),
+        bool(getattr(args, "history_ioc", None)),
+        bool(getattr(args, "history_delete", None)),
+        getattr(args, "history_prune_days", None) is not None,
+    ]
+    history_filters = any(
+        getattr(args, name, None) is not None
+        for name in ("history_type", "history_verdict", "history_severity", "history_after", "history_before")
+    )
+    history_requested = any(history_actions) or bool(getattr(args, "history_export", None)) or history_filters
+    history_action_count = sum(history_actions)
+    if history_action_count > 1:
+        console.print("[red]Choose only one history action: list, search, IOC timeline, delete, or prune.[/]")
+        return False
+    if history_requested and (has_input or getattr(args, "watchlist_add", False) or getattr(args, "watchlist_list", False)
+                              or getattr(args, "watchlist_remove", None) or getattr(args, "watchlist_scan", False)):
+        console.print("[red]History operations must be run separately from IOC scans and watchlist actions.[/]")
+        return False
+    if history_requested and not any(history_actions) and not getattr(args, "history_export", None):
+        console.print("[red]Use --history-list or --history-search with history filters.[/]")
+        return False
+    if history_requested and not 1 <= getattr(args, "history_limit", 50) <= 500:
+        console.print("[red]--history-limit must be between 1 and 500.[/]")
+        return False
+    if getattr(args, "history_ioc", None) and (history_filters or getattr(args, "history_export", None)):
+        console.print("[red]--history-ioc cannot be combined with search filters or --history-export.[/]")
+        return False
+    if (getattr(args, "history_delete", None) or getattr(args, "history_prune_days", None) is not None) and (
+        getattr(args, "history_export", None) or history_filters or getattr(args, "history_search", None)
+        or getattr(args, "history_list", False) or getattr(args, "history_ioc", None)
+    ):
+        console.print("[red]History filters/exports cannot be combined with deletion or pruning.[/]")
+        return False
+    if getattr(args, "history_prune_days", None) is not None and not 1 <= args.history_prune_days <= 36_500:
+        console.print("[red]--history-prune-days must be between 1 and 36500.[/]")
+        return False
     standalone_watchlist_action = bool(
         getattr(args, "watchlist_list", False)
         or getattr(args, "watchlist_remove", None)
         or getattr(args, "watchlist_scan", False)
     )
     if not has_input and not standalone_watchlist_action:
+        if history_requested:
+            return True
         console.print(
             Panel(
                 "[bold red]Error:[/] No IOC provided.\n\n"

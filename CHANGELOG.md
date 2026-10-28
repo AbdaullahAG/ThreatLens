@@ -5,9 +5,13 @@ All notable changes to ThreatLens are documented here.
 ## Unreleased
 
 ### Added
-- Privacy modes: standard, passive, approved-provider-only, and local-cache-only; `--privacy-preview` shows sanitized URL values and the destinations that would receive each IOC.
+- Privacy modes: standard, passive, approved-provider-only, and local-only; `--privacy-preview` shows sanitized URL values and the destinations that would receive each IOC.
 - External URL lookups omit sensitive query parameters while retaining the original IOC locally.
 - Local SQLite IOC watchlist with expiry, add/list/remove/scan commands, and stored snapshots that report changes in verdict and key risk signals.
+- `--no-history` CLI option for runs that must not create an investigation-history record.
+- Local Investigation Memory: indexed SQLite history search with IOC/type/verdict/severity/date filters, per-IOC verdict/source timelines, and co-occurrence lookup across prior investigations.
+- History lifecycle controls: bounded redacted JSON export, deletion by investigation UUID, and explicit age-based pruning; old investigation records are indexed on first use.
+- Current scans now show the most recent saved verdict and provider names for previously investigated IOCs.
 
 ### Changed
 - The current release and future distributions are licensed under Apache-2.0.
@@ -21,9 +25,7 @@ All notable changes to ThreatLens are documented here.
 - Secret redaction now covers generated reports, evidence packs, provider errors, and exporter logs; user-facing failures remain generic.
 - Spreadsheet formula neutralisation now detects formulas after leading whitespace. SQLite access continues to use parameterized statements; watchlist entries and observation storage have hard capacity limits.
 - Added mocked provider/exporter security tests and parser/input validation tests; the suite retains more than 60% total source coverage.
-
-### Added
-- `--no-history` CLI option for runs that must not create an investigation-history record.
+- Investigation history indexing uses parameterized SQLite queries and a bounded 500-observation search/export limit. History deletion cascades to the search index without deleting enrichment cache, watchlist, or asset inventory data.
 
 ## [2.2.0] — Vulnerability & SOC Triage
 
