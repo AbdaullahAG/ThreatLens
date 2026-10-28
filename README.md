@@ -28,6 +28,8 @@
 <br>
 
 > 🚀 Proudly featured in the official **[Awesome OSINT](https://github.com/jivoi/awesome-osint)** repository.
+>
+> 🧠 A ThreatLens contribution is featured in the **[XERJ Corpus Hub](https://hub.xerj.org/contributors/AbdaullahAG)**.
 
 ---
 
